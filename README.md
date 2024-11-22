@@ -1,2 +1,2 @@
 # dogme
-Repo dRNA project
+A nextflow pipeline for modification calling in nanopore reads.
