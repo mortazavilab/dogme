@@ -7,6 +7,7 @@ process doradoTask {
     memory params.gpuMemory
     time params.time
     clusterOptions "--account=${params.gpuAccount} ${params.gpuRes} --output=logs/doradoTask-%j.out --error=logs/doradoTask-%j.err"
+    errorStrategy 'ignore'    
     input:
     path inputFile
     val rnaMod
