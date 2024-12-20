@@ -1,13 +1,7 @@
 #!/usr/bin/env nextflow
 
 process doradoTask {
-    executor 'slurm'
-    queue params.gpuPartition
-    cpus params.defaultCpus
-    memory params.gpuMemory
-    time params.time
-    clusterOptions "--account=${params.gpuAccount} ${params.gpuRes} --output=logs/doradoTask-%j.out --error=logs/doradoTask-%j.err"
-    errorStrategy 'ignore'    
+    // errorStrategy 'ignore'    
     input:
     path inputFile
     val rnaMod
@@ -19,22 +13,16 @@ process doradoTask {
 
     script:
     """
+    . ${projectDir}/dogme.profile
     mkdir -p ${params.dorDir}
     fullfile=\$(basename $inputFile)
     basefile=\${fullfile%.*}
-    module load dorado
+
     dorado basecaller ${rnaModel} --models-directory ${params.rnaModelDir} --batchsize 32 $inputFile > "${inputFile.simpleName}.${rnaMod}.bam"
     """
 }
 
 process mergeBamsTask {
-    executor 'slurm'
-    queue params.cpuPartition
-    cpus params.mergeCpus
-    memory params.cpuMemory
-    time params.time
-    clusterOptions "--account=${params.cpuAccount}"
-
     input:
     val fileCount
     val rnaMod
@@ -45,19 +33,13 @@ process mergeBamsTask {
 
     script:
     """
-    module load samtools
-    samtools merge --threads ${params.mergeCpus} -o ${params.sample}.${rnaMod}.unmapped.bam ${params.dorDir}/*.${rnaMod}.bam
+   . ${projectDir}/dogme.profile
+    samtools merge --threads ${task.cpus} -o ${params.sample}.${rnaMod}.unmapped.bam ${params.dorDir}/*.${rnaMod}.bam
     chmod 775 "${params.sample}.${rnaMod}.unmapped.bam"
     """
 }
 
 process minimapTask {
-    executor 'slurm'
-    queue params.cpuPartition
-    memory params.minimapMemory
-    time params.time
-    clusterOptions "--account=${params.cpuAccount}"
-
     input:
     path inputFile
     val rnaMod
@@ -69,8 +51,7 @@ process minimapTask {
 
     script:
     """
-    module load samtools
-    module load minimap2 
+    . ${projectDir}/dogme.profile
     samtools fastq --threads 64 -T MM,ML ${params.sample}.${rnaMod}.unmapped.bam | \
     minimap2 -t 64 -ax splice --junc-bed ${params.annotRef} --secondary=no --MD -y ${params.genomeRef} - | \
     samtools sort - --threads 64 > ${params.sample}.${rnaMod}.bam \
@@ -81,13 +62,6 @@ process minimapTask {
 }
 
 process modkitTask {
-    executor 'slurm'
-    queue params.cpuPartition
-    cpus params.modkitCpus
-    memory params.cpuMemory
-    time params.time
-    clusterOptions "--account=${params.cpuAccount}"
-
     input:
     path inputFile
     path inputFileBai
@@ -99,19 +73,13 @@ process modkitTask {
 
     script:
     """
-    ${params.modkitPath}/modkit pileup -t 12 --filter-threshold 0.9 ${params.sample}.${rnaMod}.bam ${params.sample}.${rnaMod}.bed
+    . ${projectDir}/dogme.profile
+    modkit pileup -t 12 --filter-threshold 0.9 ${params.sample}.${rnaMod}.bam ${params.sample}.${rnaMod}.bed
     chmod 775 "${params.sample}.${rnaMod}.bed"
     """
 }
 
 process filterbedTask {
-    executor 'slurm'
-    queue params.cpuPartition
-    cpus params.modkitCpus
-    memory params.cpuMemory
-    time params.time
-    clusterOptions "--account=${params.cpuAccount}"
-
     input:
     path inputFile
     val rnaMod
@@ -122,19 +90,12 @@ process filterbedTask {
 
     script:
     """
-    module load python/3.10.2
-    python /share/crsp/lab/seyedam/share/bridge_dRNA/scripts/filterbed.py ${params.minCov} ${params.perMod} ${params.sample}.${rnaMod}.bed "${params.sample}.${rnaMod}.filtered-${params.minCov}-${params.perMod}.bed"
+    python ${projectDir}/scripts/filterbed.py ${params.minCov} ${params.perMod} ${params.sample}.${rnaMod}.bed "${params.sample}.${rnaMod}.filtered-${params.minCov}-${params.perMod}.bed"
     chmod 775 "${params.sample}.${rnaMod}.filtered-${params.minCov}-${params.perMod}.bed"
     """
 }
 
 process extractfastqTask {
-    executor 'slurm'
-    queue params.cpuPartition
-    memory params.minimapMemory
-    time params.time
-    clusterOptions "--account=${params.cpuAccount}"
-
     input:
     path inputFile
     val rnaMod
@@ -145,20 +106,13 @@ process extractfastqTask {
 
     script:
     """
-    module load samtools
+    . ${projectDir}/dogme.profile
     samtools fastq --threads 6 ${params.sample}.${rnaMod}.unmapped.bam > ${params.sample}.${rnaMod}.fastq
     gzip -v ${params.sample}.${rnaMod}.fastq
     """
 }
 
 process kallistoTask {
-    executor 'slurm'
-    queue params.cpuPartition
-    cpus params.kallistoCpus
-    memory params.cpuMemory
-    time params.time
-    clusterOptions "--account=${params.cpuAccount}"
-
     input:
     path inputFile
     output:
@@ -168,9 +122,9 @@ process kallistoTask {
 
     script:
     """
+    . ${projectDir}/dogme.profile
     mkdir -p ${params.sample}
-    module load kallisto
-    module load bustools
+
 
     kallisto bus --long --threshold 0.8 -x bulk -i ${params.kallistoIndex} -t ${task.cpus} -o ${params.sample} "${inputFile}"
 
@@ -186,13 +140,6 @@ process kallistoTask {
 
 
 process  splitM6aInosineTask {
-    executor 'slurm'
-    queue params.cpuPartition
-    cpus params.modkitCpus
-    memory params.cpuMemory
-    time params.time
-    clusterOptions "--account=${params.cpuAccount}"
-
     input:
     path inputFile
     output:
