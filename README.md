@@ -1,7 +1,7 @@
 # dogme
 A nextflow pipeline for modification calling in nanopore reads. 
 ### installation:
-The current version of Dogme is customized to run on the UCI HPC3 cluster. In particular Dorado, Minimap, and Kallisto are already installed on hpc3. Future versions will be cluster independent.
+The current version of Dogme is customized to run on SLURM clusters. You must first install Dorado, Minimap2, samtools, modkit, kallisto, and bustools and add their paths to the dogme.profile file in the project directory. You must also donwload the latest dorado models in specific folder to be defined in the config file. 
 ### prerequisites:
 Prerequisites include installing nextflow, using java/17 or better, installing dogme in an accessible folder, installing modkit, downloading dorado models into a defined folder. 
 You must create your own work folder for nextflow on HPC3 outside of your home directory. 
