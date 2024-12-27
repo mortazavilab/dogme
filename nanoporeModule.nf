@@ -18,7 +18,7 @@ process doradoTask {
     fullfile=\$(basename $inputFile)
     basefile=\${fullfile%.*}
 
-    dorado basecaller ${rnaModel} --models-directory ${params.rnaModelDir} --batchsize 32 $inputFile > "${inputFile.simpleName}.${rnaMod}.bam"
+    dorado basecaller ${rnaModel} --models-directory ${params.rnaModelDir}  --estimate-poly-a --batchsize 32 $inputFile > "${inputFile.simpleName}.${rnaMod}.bam"
     """
 }
 
@@ -52,7 +52,7 @@ process minimapTask {
     script:
     """
     . ${projectDir}/dogme.profile
-    samtools fastq --threads 64 -T MM,ML ${params.sample}.${rnaMod}.unmapped.bam | \
+    samtools fastq --threads 64 -T MM,ML,pt ${params.sample}.${rnaMod}.unmapped.bam | \
     minimap2 -t 64 -ax splice --junc-bed ${params.annotRef} --secondary=no --MD -y ${params.genomeRef} - | \
     samtools sort - --threads 64 > ${params.sample}.${rnaMod}.bam \
     && samtools index -@ 64 ${params.sample}.${rnaMod}.bam
