@@ -10,6 +10,6 @@ The config file must be updated to the list where the top directory containing t
 ### running dogme:
 Running Dogme on typical dataset can take more than 24 hours, therefore it is recommended to run Dogme in Tmux mode with srun. After loading Java/17 run Dogme using the following command : 
  ```
-  nextflow run /path_to_dogme/dogme.nf -c dogmetest-param.conf
+  nextflow run mortazavilab/dogme -c yourconfig.conf
   ```
   and if you need to resume your work add '-resume' to the nextflow command 
