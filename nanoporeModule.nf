@@ -179,9 +179,9 @@ process  splitModificationTask {
     grep a ${inputFile} > "${params.sample}.m6a.filtered-${params.minCov}-${params.perMod}.bed"
     grep 17596 ${inputPlusFile} | grep -v a |grep -v m | grep -v 17802 ${inputFile} > "${params.sample}.inosine.filtered-${params.minCov}-${params.perMod}.bed"
     grep a ${inputPlusFile} > "${params.sample}.m6a.filtered-${params.minCov}-${params.perMod}.plus.bed"
-    grep 17596 ${inputPlusFile} | grep -v a |grep -v m | grep -v 17802 ${inputFile} > "${params.sample}.inosine.filtered-${params.minCov}-${params.perMod}.bed"
+    grep 17596 ${inputPlusFile} | grep -v a |grep -v m | grep -v 17802 ${inputFile} > "${params.sample}.inosine.filtered-${params.minCov}-${params.perMod}.plus.bed"
     grep a ${inputMinusFile} > "${params.sample}.m6a.filtered-${params.minCov}-${params.perMod}.minus.bed"
-    grep 17596 ${inputPlusFile} | grep -v a |grep -v m | grep -v 17802 ${inputFile} > "${params.sample}.inosine.filtered-${params.minCov}-${params.perMod}.bed"
+    grep 17596 ${inputPlusFile} | grep -v a |grep -v m | grep -v 17802 ${inputFile} > "${params.sample}.inosine.filtered-${params.minCov}-${params.perMod}.minus.bed"
     
     grep m ${inputFile} > "${params.sample}.m5c.filtered-${params.minCov}-${params.perMod}.bed"
     grep 17802 ${inputFile} | grep -v a |grep -v m | grep -v 17596 > "${params.sample}.pseU.filtered-${params.minCov}-${params.perMod}.bed"
