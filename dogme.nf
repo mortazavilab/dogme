@@ -3,15 +3,11 @@
 
 nextflow.enable.dsl=2
 
-include { modWorkflow as m6aWorkflow } from './nanoporeModule'
-include { modWorkflow as pseUWorkflow} from './nanoporeModule'
-include { modWorkflow as m5cWorkflow} from './nanoporeModule'
+include { modWorkflow } from './nanoporeModule'
 
 
 workflow {
-    m6aWorkflow('m6aInosine', 'sup,inosine_m6A')
-    pseUWorkflow('pseU', 'sup,pseU')
-    m5cWorkflow('m5c', 'sup,m5C')
+    modWorkflow('sup,inosine_m6A,pseU,m5C')
 }
 
 
