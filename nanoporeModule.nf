@@ -12,7 +12,7 @@ process doradoTask {
 
     script:
     """
-    . ${projectDir}/dogme.profile
+    . ${params.scriptEnv}
     mkdir -p ${params.dorDir}
     fullfile=\$(basename $inputFile)
     basefile=\${fullfile%.*}
@@ -31,7 +31,7 @@ process mergeBamsTask {
 
     script:
     """
-   . ${projectDir}/dogme.profile
+    . ${params.scriptEnv}
     samtools merge --threads ${task.cpus} -o ${params.sample}.unmapped.bam ${params.dorDir}/*.bam
     """
 }
@@ -51,7 +51,7 @@ process minimapTask {
 
     script:
     """
-    . ${projectDir}/dogme.profile
+    . ${params.scriptEnv}
     samtools fastq --threads 64 -T MM,ML,pt ${params.sample}.unmapped.bam | \
     minimap2 -t 64 -ax splice --junc-bed ${params.annotRef} --secondary=no --MD -y ${params.genomeRef} - | \
     samtools sort - --threads 64 > ${params.sample}.bam \
@@ -79,7 +79,7 @@ process modkitTask {
 
     script:
     """
-    . ${projectDir}/dogme.profile
+    . ${params.scriptEnv}
     modkit pileup -t 12 --filter-threshold 0.9 ${params.sample}.bam ${params.sample}.bed
     modkit pileup -t 12 --filter-threshold 0.9 ${params.sample}.plus.bam ${params.sample}.plus.bed
     modkit pileup -t 12 --filter-threshold 0.9 ${params.sample}.minus.bam ${params.sample}.minus.bed
@@ -116,7 +116,7 @@ process extractfastqTask {
 
     script:
     """
-    . ${projectDir}/dogme.profile
+    . ${params.scriptEnv}
     samtools fastq --threads 6 ${params.sample}.unmapped.bam > ${params.sample}.fastq
     gzip -v ${params.sample}.fastq
     """
@@ -132,7 +132,7 @@ process kallistoTask {
 
     script:
     """
-    . ${projectDir}/dogme.profile
+    . ${params.scriptEnv}
     mkdir -p ${params.sample}
 
 
