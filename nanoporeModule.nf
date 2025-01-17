@@ -1,10 +1,29 @@
 #!/usr/bin/env nextflow
 
+process doradoDownloadTask {
+    input:
+    val dirPath
+    val doradoModel
+    output:
+    val "*_*"
+    publishDir { dirPath } , mode: 'copy'
+
+    script:
+    """
+    echo "${dirPath}"
+    . ${params.scriptEnv}
+    mkdir -p ${dirPath}
+    dorado download --data ${params.podDir} --model ${doradoModel}
+    """
+}
+
 process doradoTask {
     // errorStrategy 'ignore'    
     input:
     path inputFile
-    val rnaModel
+    val modDirIgnore
+    val modDirGood
+    val doradoModel
 
     output:
     path "${inputFile.simpleName}.bam"
@@ -17,7 +36,7 @@ process doradoTask {
     fullfile=\$(basename $inputFile)
     basefile=\${fullfile%.*}
 
-    dorado basecaller ${rnaModel} --models-directory ${params.rnaModelDir}  --estimate-poly-a --batchsize 32 $inputFile > "${inputFile.simpleName}.bam"
+    dorado basecaller ${doradoModel} --models-directory ${modDirGood}  --estimate-poly-a --batchsize 32 $inputFile > "${inputFile.simpleName}.bam"
     """
 }
 
@@ -196,37 +215,39 @@ process  splitModificationTask {
 workflow modWorkflow {
     take:
 	theModel 
+	modelDirectory
     
     main: 
-	println "theModel: " + theModel
+	// Download the latest dorado models
+        modelPath = doradoDownloadTask(modelDirectory, theModel)
     
 	def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
-    // Run doradoTask for each input file
-    bamFiles = doradoTask(pod5FilesChannel, theModel).collectFile()
-
-    // Count all of the files as a way to force synchronization before merging
-    fileCount = bamFiles.map { it.size() }.first()
-
-    // Run merge task using the file count
-    unmappedbam = mergeBamsTask(fileCount)
-
-    // Run minimap
-    mappedBams = minimapTask(unmappedbam)
-   
-    // Run extractFastq
-    fastqFile = extractfastqTask(unmappedbam)
-
-    // Run kallistoTask using the extracted FASTQ file
-    kallistoResults = kallistoTask(fastqFile)
-
-    // Run modkit
-    bedfile = modkitTask(mappedBams)
-
-    // Filter BED file
-    filterbed = filterbedTask(bedfile) 
-    
-    // split the combined bed files into a bedfile for each modification 
-    splitResults = splitModificationTask(filterbed)      
+	// Run doradoTask for each input file
+	bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
+	
+	// Count all of the files as a way to force synchronization before merging
+	fileCount = bamFiles.map { it.size() }.first()
+	
+	// Run merge task using the file count
+	unmappedbam = mergeBamsTask(fileCount)
+	
+	// Run minimap
+	mappedBams = minimapTask(unmappedbam)
+	
+	// Run extractFastq
+	fastqFile = extractfastqTask(unmappedbam)
+	
+	// Run kallistoTask using the extracted FASTQ file
+	kallistoResults = kallistoTask(fastqFile)
+	
+	// Run modkit
+	bedfile = modkitTask(mappedBams)
+	
+	// Filter BED file
+	filterbed = filterbedTask(bedfile) 
+	
+	// split the combined bed files into a bedfile for each modification 
+	splitResults = splitModificationTask(filterbed)      
 }
 
 
