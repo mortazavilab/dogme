@@ -5,8 +5,8 @@ process doradoDownloadTask {
     val dirPath
     val doradoModel
     output:
-    val "*_*"
-    publishDir { dirPath } , mode: 'copy'
+    val "*_*/"
+    publishDir { dirPath } , mode: 'symlink'
 
     script:
     """
