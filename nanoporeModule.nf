@@ -5,8 +5,7 @@ process doradoDownloadTask {
     val dirPath
     val doradoModel
     output:
-    val "*_*/"
-    publishDir { dirPath } , mode: 'symlink'
+    val dirPath
 
     script:
     """
@@ -14,6 +13,7 @@ process doradoDownloadTask {
     . ${params.scriptEnv}
     mkdir -p ${dirPath}
     dorado download --data ${params.podDir} --model ${doradoModel}
+    cp -rp *_* ${dirPath}
     """
 }
 
@@ -22,7 +22,7 @@ process doradoTask {
     input:
     path inputFile
     val modDirIgnore
-    val modDirGood
+    path modDirGood
     val doradoModel
 
     output:
