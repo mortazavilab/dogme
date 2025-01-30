@@ -4,33 +4,41 @@
 process softwareVTask {
     input:
     val version
+    val modelPath
     output:
-    path "${params.sample}.softwareReport.txt"
+    path "${params.sample}.softwareVersion.txt"
     publishDir params.topDir, mode: 'copy'
 
     script:
     """
     . ${params.scriptEnv}
     
-    echo "dogme $version" > "${params.sample}.softwareReport.txt"
+    echo "dogme $version" > "${params.sample}.softwareVersion.txt"
     
     doradoV=\$(dorado -v 2>&1)
-    echo "dorado \$doradoV" >> "${params.sample}.softwareReport.txt"
+    echo "dorado \$doradoV" >> "${params.sample}.softwareVersion.txt"
 
     samtoolsV=\$(samtools version |grep samtools)
-    echo \$samtoolsV >> "${params.sample}.softwareReport.txt"
+    echo \$samtoolsV >> "${params.sample}.softwareVersion.txt"
 
     minimap2V=\$(minimap2 --version 2>&1)
-    echo "minimap2 \$minimap2V" >> "${params.sample}.softwareReport.txt"
+    echo "minimap2 \$minimap2V" >> "${params.sample}.softwareVersion.txt"
 
     modkitV=\$(modkit --version 2>&1)
-    echo \$modkitV >> "${params.sample}.softwareReport.txt"
+    echo \$modkitV >> "${params.sample}.softwareVersion.txt"
 
     kallistoV=\$(kallisto version)
-    echo \$kallistoV >> "${params.sample}.softwareReport.txt"
+    echo \$kallistoV >> "${params.sample}.softwareVersion.txt"
 
     bustoolsV=\$(bustools version)
-    echo \$bustoolsV >> "${params.sample}.softwareReport.txt"
+    echo \$bustoolsV >> "${params.sample}.softwareVersion.txt"
+    
+    echo "Dorado Models Used: " >> "${params.sample}.softwareVersion.txt"
+    for folder in "${modelPath}"/*; do
+    fullfile=\$(basename "\$folder")
+    echo "\$fullfile" >> "${params.sample}.softwareVersion.txt"
+    done
+   
     """
 }
 
@@ -68,8 +76,6 @@ process doradoTask {
     """
     . ${params.scriptEnv}
     mkdir -p ${params.dorDir}
-    fullfile=\$(basename $inputFile)
-    basefile=\${fullfile%.*}
 
     dorado basecaller ${doradoModel} --models-directory ${modDirGood}  --estimate-poly-a --batchsize 32 $inputFile > "${inputFile.simpleName}.bam"
     """
@@ -255,9 +261,9 @@ workflow modWorkflow {
     
     main: 
 	// Download the latest dorado models
-        modelPath = doradoDownloadTask(modelDirectory, theModel)
+     modelPath = doradoDownloadTask(modelDirectory, theModel)
     //Report all the software versions in report file  
-    softwareVTask(theVersion)
+    softwareVTask(theVersion, modelPath)
 	def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
 	// Run doradoTask for each input file
 	bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
