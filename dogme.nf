@@ -14,13 +14,17 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
+def dogmeVersion = "0.88"
+
+
+// Set the default value at the workflow level
 def defaultModDir = "${launchDir}/doradoModels"
 
 workflow {
     modDir = getParamOrDefault(params.modDir, defaultModDir)
     params.modDir = modDir
     println "dogme.nf modDir = ${modDir}"
-    modWorkflow('sup,inosine_m6A,pseU,m5C', modDir)
+    modWorkflow(dogmeVersion, 'sup,inosine_m6A,pseU,m5C', modDir)
 }
 
 // Define other processes similarly, ensuring they take `rnaMod` as an input

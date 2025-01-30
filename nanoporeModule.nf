@@ -1,5 +1,40 @@
 #!/usr/bin/env nextflow
 
+
+process softwareVTask {
+    input:
+    val version
+    output:
+    path "${params.sample}.softwareReport.txt"
+    publishDir params.topDir, mode: 'copy'
+
+    script:
+    """
+    . ${params.scriptEnv}
+    
+    echo "dogme $version" > "${params.sample}.softwareReport.txt"
+    
+    doradoV=\$(dorado -v 2>&1)
+    echo "dorado \$doradoV" >> "${params.sample}.softwareReport.txt"
+
+    samtoolsV=\$(samtools version |grep samtools)
+    echo \$samtoolsV >> "${params.sample}.softwareReport.txt"
+
+    minimap2V=\$(minimap2 --version 2>&1)
+    echo "minimap2 \$minimap2V" >> "${params.sample}.softwareReport.txt"
+
+    modkitV=\$(modkit --version 2>&1)
+    echo \$modkitV >> "${params.sample}.softwareReport.txt"
+
+    kallistoV=\$(kallisto version)
+    echo \$kallistoV >> "${params.sample}.softwareReport.txt"
+
+    bustoolsV=\$(bustools version)
+    echo \$bustoolsV >> "${params.sample}.softwareReport.txt"
+    """
+}
+
+
 process doradoDownloadTask {
     input:
     val dirPath
@@ -214,13 +249,15 @@ process  splitModificationTask {
 
 workflow modWorkflow {
     take:
+    theVersion
 	theModel 
 	modelDirectory
     
     main: 
 	// Download the latest dorado models
         modelPath = doradoDownloadTask(modelDirectory, theModel)
-    
+    //Report all the software versions in report file  
+    softwareVTask(theVersion)
 	def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
 	// Run doradoTask for each input file
 	bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
