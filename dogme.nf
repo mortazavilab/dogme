@@ -14,8 +14,7 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
-def dogmeVersion = "0.88"
-
+def dogmeVersion = "0.89"
 
 // Set the default value at the workflow level
 def defaultModDir = "${launchDir}/doradoModels"
@@ -23,8 +22,16 @@ def defaultModDir = "${launchDir}/doradoModels"
 workflow {
     modDir = getParamOrDefault(params.modDir, defaultModDir)
     params.modDir = modDir
-    println "dogme.nf modDir = ${modDir}"
-    modWorkflow(dogmeVersion, 'sup,inosine_m6A,pseU,m5C', modDir)
+
+    // Determine modifications based on read type
+    def modificationsMap = [
+        "RNA": 'inosine_m6A,pseU,m5C',
+        "DNA": '5mCG_5hmCG,6mA'
+    ]
+    
+    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
+    modWorkflow(dogmeVersion, theModel, modDir)
 }
 
 // Define other processes similarly, ensuring they take `rnaMod` as an input
@@ -41,4 +48,3 @@ workflow.onComplete {
         println process.err.text
     }
 }
-
