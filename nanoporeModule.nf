@@ -61,7 +61,7 @@ process doradoDownloadTask {
 }
 
 process doradoTask {
-    // errorStrategy 'ignore'    
+    errorStrategy 'ignore'    
     input:
     path inputFile
     val modDirIgnore
@@ -112,8 +112,18 @@ process minimapTask {
     script:
     """
     . ${params.scriptEnv}
+    
+     if [[ "${params.readType}" == "RNA" ]]; then
+        minimap2_opts="-ax splice -uf --junc-bed ${params.annotRef}"
+    elif [[ "${params.readType}" == "CDNA" ]]; then
+        minimap2_opts="-ax splice:hq -uf --junc-bed ${params.annotRef}"  
+    else
+        minimap2_opts="-ax lr:hq"  
+    fi
+    
+    
     samtools fastq --threads 64 -T MM,ML,pt ${params.sample}.unmapped.bam | \
-    minimap2 -t 64 -ax splice --junc-bed ${params.annotRef} --secondary=no --MD -y ${params.genomeRef} - | \
+    minimap2 -t 64 \$minimap2_opts --secondary=no --MD -y ${params.genomeRef} - | \
     samtools sort - --threads 64 > ${params.sample}.bam \
     && samtools index -@ 64 ${params.sample}.bam
     samtools view -b -f 16 ${params.sample}.bam -o ${params.sample}.minus.bam && samtools index -@ 32 ${params.sample}.minus.bam
@@ -277,12 +287,15 @@ workflow modWorkflow {
 	// Run minimap
 	mappedBams = minimapTask(unmappedbam)
 	
-	// Run extractFastq
+    if (params.readType == 'RNA' || params.readType == 'CDNA') {
+    // Run extractFastq
 	fastqFile = extractfastqTask(unmappedbam)
 	
 	// Run kallistoTask using the extracted FASTQ file
 	kallistoResults = kallistoTask(fastqFile)
-	
+    }
+    
+    if (params.readType != 'CDNA') {
 	// Run modkit
 	bedfile = modkitTask(mappedBams)
 	
@@ -290,7 +303,8 @@ workflow modWorkflow {
 	filterbed = filterbedTask(bedfile) 
 	
 	// split the combined bed files into a bedfile for each modification 
-	splitResults = splitModificationTask(filterbed)      
+	splitResults = splitModificationTask(filterbed)
+    }
 }
 
 
