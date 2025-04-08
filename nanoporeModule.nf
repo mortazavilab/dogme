@@ -1,5 +1,5 @@
 #!/usr/bin/env nextflow
-
+nextflow.enable.dsl=2
 
 process softwareVTask {
     input:
@@ -98,10 +98,10 @@ process mergeBamsTask {
 
 process minimapTask {
     input:
+
     path inputFile
     output:
-    path "${params.sample}.bam"
-    path "${params.sample}.bam.bai"
+    path "${params.sample}.*"
 
     publishDir params.bamDir, mode: 'copy'
 
@@ -129,12 +129,9 @@ process minimapTask {
 process separateStrandsTask {
     input: 
     path inputbam
-    path inputbambai
     output:
-    path "${params.sample}.plus.bam"
-    path "${params.sample}.plus.bam.bai"
-    path "${params.sample}.minus.bam"
-    path "${params.sample}.minus.bam.bai"
+    tuple path("${params.sample}.plus.bam"), path("${params.sample}.plus.bam.bai"), emit: plus_strand
+    tuple path("${params.sample}.minus.bam"), path("${params.sample}.minus.bam.bai"), emit: minus_strand
     
     publishDir params.bamDir, mode: 'copy'
     
@@ -148,39 +145,35 @@ process separateStrandsTask {
 
 process modkitTask {
     input:
-    path inputFile
-    path inputFileBai
+    tuple path(inputFile), path(inputBai) // Accept a tuple of BAM and BAI files
     
     output:
-    path "${params.sample}.bed"
+    path "*.bed"
     
     publishDir params.bedDir, mode: 'copy'
 
     script:
+    println("modkitTask inputFile: ${inputFile}")
+    println("modkitTask params.sample: ${params.sample}")
+    println("modkitTask params.readType: ${params.readType}")
+
     """
     . ${params.scriptEnv}
-    modkit pileup -t 12 --filter-threshold 0.9 ${inputFile} ${params.sample}.bed
-    """
-}
-
-process modkitStrandedTask {
-    input:
-    path inputPlusFile
-    path inputPlusFileBai
-    path inputMinusFile
-    path inputMinusFileBai
-    
-    output:
-    path "${params.sample}.plus.bed"
-    path "${params.sample}.minus.bed"
-    
-    publishDir params.bedDir, mode: 'copy'
-
-    script:
-    """
-    . ${params.scriptEnv}
-    modkit pileup -t 12 --filter-threshold 0.9 ${inputPlusFile} ${params.sample}.plus.bed
-    modkit pileup -t 12 --filter-threshold 0.9 ${inputMinusFile} ${params.sample}.minus.bed
+    echo "params.readType: ${params.readType}"
+    bedFileOutput="${params.sample}.bed" # Default value
+       if [[ "${params.readType}" == "RNA" ]]; then
+        echo "Inside RNA block"
+        if [[ "${inputFile}" == *".plus."* ]]; then
+            echo "Setting bedFileOutput for .plus"
+            bedFileOutput="${params.sample}.plus.bed"
+        elif [[ "${inputFile}" == *".minus."* ]]; then
+            echo "Setting bedFileOutput for .minus"
+            bedFileOutput="${params.sample}.minus.bed"
+        fi
+        # If neither .plus nor .minus, it will retain the default .bed
+    fi
+    echo "bedFileOutput: \${bedFileOutput}"
+    modkit pileup -t 12 --filter-threshold 0.9 "${inputFile}" \${bedFileOutput}
     """
 }
 
@@ -189,30 +182,22 @@ process filterbedTask {
     path inputFile
 
     output:
-    path "${params.sample}.filtered-${params.minCov}-${params.perMod}.bed"
-    
+    path "*.filtered*.bed"
+
     publishDir params.bedDir, mode: 'copy'
 
     script:
     """
-    python ${projectDir}/scripts/filterbed.py ${params.minCov} ${params.perMod} ${params.sample}.bed "${params.sample}.filtered-${params.minCov}-${params.perMod}.bed"
-    """
-}
-
-process filterbedStrandedTask {
-    input:
-    path inputPlusFile
-    path inputMinusFile
-    output:
-    path "${params.sample}.filtered-${params.minCov}-${params.perMod}.plus.bed"
-    path "${params.sample}.filtered-${params.minCov}-${params.perMod}.minus.bed"
-    
-    publishDir params.bedDir, mode: 'copy'
-
-    script:
-    """
-    python ${projectDir}/scripts/filterbed.py ${params.minCov} ${params.perMod} ${params.sample}.plus.bed "${params.sample}.filtered-${params.minCov}-${params.perMod}.plus.bed"
-    python ${projectDir}/scripts/filterbed.py ${params.minCov} ${params.perMod} ${params.sample}.minus.bed "${params.sample}.filtered-${params.minCov}-${params.perMod}.minus.bed"
+    output_prefix="${inputFile.baseName}"
+    if [[ "${params.readType}" == "RNA" ]]; then
+        if [[ "${inputFile.name}" == *".plus."* ]]; then
+            output_prefix="${inputFile.baseName}.plus"
+        elif [[ "${inputFile.name}" == *".minus."* ]]; then
+            output_prefix="${inputFile.baseName}.minus"
+        fi
+    fi
+    bedFileOutput="\${output_prefix}.filtered-${params.minCov}-${params.perMod}.bed"
+    python ${projectDir}/scripts/filterbed.py ${params.minCov} ${params.perMod} "${inputFile}" \${bedFileOutput}
     """
 }
 
@@ -262,103 +247,106 @@ process kallistoTask {
 process splitModificationTask {
     input:
     path inputFile
+
     output:
-    path "${params.sample}.5mCG.filtered.bed"
-    path "${params.sample}.5hmCG.filtered.bed"
-    path "${params.sample}.6mA.filtered.bed"
+    path "*.filtered.*"
+
     publishDir params.bedDir, mode: 'copy'
+
     script:
     """
-    # Extract 5mCG (methylation)
-    grep -w 'm' ${inputFile} > "${params.sample}.5mCG.filtered.bed"
-    # Extract 5hmCG (hydroxymethylation)
-    grep -w 'h' ${inputFile} > "${params.sample}.5hmCG.filtered.bed"
-    # Extract 6mA
-    grep -w 'a' ${inputFile} > "${params.sample}.6mA.filtered.bed"
+    . ${params.scriptEnv}
+
+    if [[ "${params.readType}" == "DNA" ]]; then
+        # Extract 5mCG (methylation)
+        grep -w 'm' "${inputFile}" > "${inputFile.baseName}.5mCG.filtered.bed"
+        # Extract 5hmCG (hydroxymethylation)
+        grep -w 'h' "${inputFile}" > "${inputFile.baseName}.5hmCG.filtered.bed"
+        # Extract 6mA
+        grep -w 'a' "${inputFile}" > "${inputFile.baseName}.6mA.filtered.bed"
+    elif [[ "${params.readType}" == "RNA" ]]; then
+        base_name="\$(basename "${inputFile}" .bed)"
+        strand=""
+        if [[ "\${base_name}" == *".plus"* ]]; then
+            strand=".plus"
+        elif [[ "\${base_name}" == *".minus"* ]]; then
+            strand=".minus"
+        fi
+
+        # Extract m6A modifications (Plus & Minus strands)
+        grep -w 'a' "${inputFile}" > "\${base_name/filtered*/m6A.filtered}\${strand}.bed"
+
+        # Extract inosine modifications (Plus & Minus strands)
+        grep -w '17596' "${inputFile}" > "\${base_name/filtered*/inosine.filtered}\${strand}.bed"
+
+        # Extract pseudouridine (pseU) modifications (Plus & Minus strands)
+        grep -w '17802' "${inputFile}" > "\${base_name/filtered*/pseU.filtered}\${strand}.bed"
+
+        # Extract m5C modifications (Plus & Minus strands)
+        grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}\${strand}.bed"
+    fi
     """
 }
-
-// The splitmodification task generates bed files for each modification. 
-// Modifications are identified by numbers and letters: inosine (17596), m5c (m), m6a (a), and pseU (17802). 
-process splitModificationStrandedTask {
-    input:
-    path inputPlusFile
-    path inputMinusFile
-    output:
-    path "${params.sample}.inosine.plus.filtered.bed"
-    path "${params.sample}.inosine.minus.filtered.bed"
-    path "${params.sample}.m6A.plus.filtered.bed"
-    path "${params.sample}.m6A.minus.filtered.bed"
-    path "${params.sample}.pseU.plus.filtered.bed"
-    path "${params.sample}.pseU.minus.filtered.bed"
-    path "${params.sample}.m5C.plus.filtered.bed"
-    path "${params.sample}.m5C.minus.filtered.bed"
-    publishDir params.bedDir, mode: 'copy'
-    script:
-    """
-    # Extract m6A modifications (Plus & Minus strands)
-    grep -w 'a' ${inputPlusFile} > "${params.sample}.m6A.plus.filtered.bed"
-    grep -w 'a' ${inputMinusFile} > "${params.sample}.m6A.minus.filtered.bed"
-    
-    # Extract inosine modifications (Plus & Minus strands)
-    grep -w '17596' ${inputPlusFile} > "${params.sample}.inosine.plus.filtered.bed"
-    grep -w '17596' ${inputMinusFile} > "${params.sample}.inosine.minus.filtered.bed"
-
-    # Extract pseudouridine (pseU) modifications (Plus & Minus strands)
-    grep -w '17802' ${inputPlusFile} > "${params.sample}.pseU.plus.filtered.bed"
-    grep -w '17802' ${inputMinusFile} > "${params.sample}.pseU.minus.filtered.bed"
-    
-    # Extract m5C modifications (Plus & Minus strands)
-    grep -w 'm' ${inputPlusFile} > "${params.sample}.m5C.plus.filtered.bed"
-    grep -w 'm' ${inputMinusFile} > "${params.sample}.m5C.minus.filtered.bed"
-    """
-}
-
 
 workflow modWorkflow {
     take:
     theVersion
-	theModel 
-	modelDirectory
+    theModel 
+    modelDirectory
     
     main: 
-	// Download the latest dorado models
+    // Download the latest dorado models
      modelPath = doradoDownloadTask(modelDirectory, theModel)
     //Report all the software versions in report file  
     softwareVTask(theVersion, modelPath)
-	def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
-	// Run doradoTask for each input file
-	bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
-	
-	// Count all of the files as a way to force synchronization before merging
-	fileCount = bamFiles.map { it.size() }.first()
-	
-	// Run merge task using the file count
-	unmappedbam = mergeBamsTask(fileCount)
-	
-	// Run minimap
-	mappedBams = minimapTask(unmappedbam)
-	
+    def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
+    // Run doradoTask for each input file
+    bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
+    
+    // Count all of the files as a way to force synchronization before merging
+    fileCount = bamFiles.map { it.size() }.first()
+    
+    // Run merge task using the file count
+    unmappedbam = mergeBamsTask(fileCount)
+    
+    // Run minimap
+    mappedBam = minimapTask(unmappedbam)
+    // Create a channel containing only the BAM file path for the first task
+    firstBam = mappedBam.map{bam, bai -> bam}
+    
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
-    // Run extractFastq
-	fastqFile = extractfastqTask(unmappedbam)
-	
-	// Run kallistoTask using the extracted FASTQ file
-	kallistoResults = kallistoTask(fastqFile)
+        // Run extractFastq
+        fastqFile = extractfastqTask(unmappedbam)
+        // Run kallistoTask using the extracted FASTQ file
+        kallistoResults = kallistoTask(fastqFile)
+    }
+
+    // unified pipeline
+    if (params.readType == 'DNA') { 
+        bedfiles = modkitTask(firstBam)       
+    } else if (params.readType == 'RNA') {
+        strands = separateStrandsTask(firstBam) // Invoke separateStrandsTask once
+        
+        // Extract plus and minus strand outputs
+        plusStrand = strands.plus_strand
+        minusStrand = strands.minus_strand
+        
+        // Combine plus and minus strand outputs into a single channel of tuples (bam, bai)
+        combinedStrand = plusStrand.concat(minusStrand)
+        bedfiles = modkitTask(combinedStrand)
     }
     
-    if (params.readType == 'DNA') { 
-    // DNA: Apply correct modifications (5mCG, 5hmCG, 6mA)
-        bedfile = modkitTask(mappedBams)
-        filterbed = filterbedTask(bedfile)
-        splitResults = splitModificationTask(filterbed)
-    }    
-    
-    if (params.readType == 'RNA') {
-	// RNA: Apply stranded modifications (inosine_m6A, pseU, m5C)
-        strandedBams = separateStrandsTask(mappedBams)
-        bedfile = modkitStrandedTask(strandedBams)
-        filterbed = filterbedStrandedTask(bedfile)
-        splitResults = splitModificationStrandedTask(filterbed)
+    if (params.readType == 'RNA' || params.readType == 'DNA') {
+        filterbeds = filterbedTask(bedfiles)
+        splitResults = splitModificationTask(filterbeds)
     }
 }
+
+
+
+
+
+
+
+
+
