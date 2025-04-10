@@ -23,15 +23,19 @@ process softwareVTask {
 
     minimap2V=\$(minimap2 --version 2>&1)
     echo "minimap2 \$minimap2V" >> "${params.sample}.softwareVersion.txt"
-
+    
+    if [[ "${params.readType}" == "DNA" ]] || [[ "${params.readType}" == "RNA" ]]; then
     modkitV=\$(modkit --version 2>&1)
     echo \$modkitV >> "${params.sample}.softwareVersion.txt"
-
+    fi
+    
+    if [[ "${params.readType}" == "CDNA" ]] || [[ "${params.readType}" == "RNA" ]]; then
     kallistoV=\$(kallisto version)
     echo \$kallistoV >> "${params.sample}.softwareVersion.txt"
 
     bustoolsV=\$(bustools version)
     echo \$bustoolsV >> "${params.sample}.softwareVersion.txt"
+    fi
     
     echo "Dorado Models Used: " >> "${params.sample}.softwareVersion.txt"
     for folder in "${modelPath}"/*; do
@@ -189,13 +193,6 @@ process filterbedTask {
     script:
     """
     output_prefix="${inputFile.baseName}"
-    if [[ "${params.readType}" == "RNA" ]]; then
-        if [[ "${inputFile.name}" == *".plus."* ]]; then
-            output_prefix="${inputFile.baseName}.plus"
-        elif [[ "${inputFile.name}" == *".minus."* ]]; then
-            output_prefix="${inputFile.baseName}.minus"
-        fi
-    fi
     bedFileOutput="\${output_prefix}.filtered-${params.minCov}-${params.perMod}.bed"
     python ${projectDir}/scripts/filterbed.py ${params.minCov} ${params.perMod} "${inputFile}" \${bedFileOutput}
     """
@@ -266,25 +263,37 @@ process splitModificationTask {
         grep -w 'a' "${inputFile}" > "${inputFile.baseName}.6mA.filtered.bed"
     elif [[ "${params.readType}" == "RNA" ]]; then
         base_name="\$(basename "${inputFile}" .bed)"
-        strand=""
-        if [[ "\${base_name}" == *".plus"* ]]; then
-            strand=".plus"
-        elif [[ "\${base_name}" == *".minus"* ]]; then
-            strand=".minus"
-        fi
+
 
         # Extract m6A modifications (Plus & Minus strands)
-        grep -w 'a' "${inputFile}" > "\${base_name/filtered*/m6A.filtered}\${strand}.bed"
+        grep -w 'a' "${inputFile}" > "\${base_name/filtered*/m6A.filtered}.bed"
 
         # Extract inosine modifications (Plus & Minus strands)
-        grep -w '17596' "${inputFile}" > "\${base_name/filtered*/inosine.filtered}\${strand}.bed"
+        grep -w '17596' "${inputFile}" > "\${base_name/filtered*/inosine.filtered}.bed"
 
         # Extract pseudouridine (pseU) modifications (Plus & Minus strands)
-        grep -w '17802' "${inputFile}" > "\${base_name/filtered*/pseU.filtered}\${strand}.bed"
+        grep -w '17802' "${inputFile}" > "\${base_name/filtered*/pseU.filtered}.bed"
 
         # Extract m5C modifications (Plus & Minus strands)
-        grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}\${strand}.bed"
+        grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}.bed"
     fi
+    """
+}
+
+process generateReport {
+    tag "Generate metadata report"
+
+    input:
+    path report_inputs
+    path results
+
+    output:
+    path "report.tsv", emit: report
+    publishDir params.topDir, mode: 'copy'
+
+    script:
+    """
+    python ${projectDir}/scripts/generate_report.py -i ${report_inputs} -o report.tsv
     """
 }
 
@@ -295,7 +304,7 @@ workflow modWorkflow {
     modelDirectory
     
     main: 
-    // Download the latest dorado models
+    // Download the latest dorado modelss
      modelPath = doradoDownloadTask(modelDirectory, theModel)
     //Report all the software versions in report file  
     softwareVTask(theVersion, modelPath)
@@ -339,7 +348,11 @@ workflow modWorkflow {
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         filterbeds = filterbedTask(bedfiles)
         splitResults = splitModificationTask(filterbeds)
-    }
+        generateReport(launchDir, splitResults)
+    } else {
+        splitResults = Channel.empty()
+        generateReport(launchDir, splitResults)
+    }  
 }
 
 
