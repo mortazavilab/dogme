@@ -355,7 +355,19 @@ workflow modWorkflow {
     }  
 }
 
-
+workflow reportsWorkflow {
+    take:
+    theVersion
+    modelDirectory
+    
+    main:
+    // Run softwareVTask without downloading models
+    softwareVTask(theVersion, modelDirectory)
+    
+    // Generate report using existing results
+    existingResults = Channel.fromPath("${params.bedDir}/*.filtered.*")
+    generateReport(launchDir, existingResults)
+}
 
 
 

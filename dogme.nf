@@ -3,6 +3,7 @@
 nextflow.enable.dsl=2
 
 include { modWorkflow } from './nanoporeModule'
+include { reportsWorkflow } from './nanoporeModule'
 
 def getParamOrDefault(param, defaultValue) {
     if (param == null || param == 'null' || param == 'undefined' || !param) {
@@ -29,6 +30,10 @@ workflow {
     theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
 
     results = modWorkflow(dogmeVersion, theModel, modDir)
+}
+
+workflow reports {
+    reportsWorkflow(dogmeVersion, params.modDir)
 }
 
 workflow.onComplete {
