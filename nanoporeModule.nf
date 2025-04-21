@@ -355,6 +355,55 @@ workflow modWorkflow {
     }  
 }
 
+workflow remapWorkflow {
+    take:
+    theVersion
+    theModel 
+    modelDirectory
+    
+    main: 
+    
+    // start from unmapped bam file
+    def unmappedbam = Channel.fromPath("${params.bamDir}/*.unmapped.bam")
+    
+    // Run minimap
+    mappedBam = minimapTask(unmappedbam)
+    // Create a channel containing only the BAM file path for the first task
+    firstBam = mappedBam.map{bam, bai -> bam}
+    
+    if (params.readType == 'RNA' || params.readType == 'CDNA') {
+        // Run extractFastq
+        fastqFile = extractfastqTask(unmappedbam)
+        // Run kallistoTask using the extracted FASTQ file
+        kallistoResults = kallistoTask(fastqFile)
+    }
+
+    // unified pipeline
+    if (params.readType == 'DNA') { 
+        bedfiles = modkitTask(firstBam)       
+    } else if (params.readType == 'RNA') {
+        strands = separateStrandsTask(firstBam) // Invoke separateStrandsTask once
+        
+        // Extract plus and minus strand outputs
+        plusStrand = strands.plus_strand
+        minusStrand = strands.minus_strand
+        
+        // Combine plus and minus strand outputs into a single channel of tuples (bam, bai)
+        combinedStrand = plusStrand.concat(minusStrand)
+        bedfiles = modkitTask(combinedStrand)
+    }
+    
+    if (params.readType == 'RNA' || params.readType == 'DNA') {
+        filterbeds = filterbedTask(bedfiles)
+        splitResults = splitModificationTask(filterbeds)
+        generateReport(launchDir, splitResults)
+    } else {
+        splitResults = Channel.empty()
+        generateReport(launchDir, splitResults)
+    }  
+}
+
+
 workflow reportsWorkflow {
     take:
     theVersion

@@ -4,6 +4,7 @@ nextflow.enable.dsl=2
 
 include { modWorkflow } from './nanoporeModule'
 include { reportsWorkflow } from './nanoporeModule'
+include { remapWorkflow } from './nanoporeModule'
 
 def getParamOrDefault(param, defaultValue) {
     if (param == null || param == 'null' || param == 'undefined' || !param) {
@@ -31,6 +32,22 @@ workflow {
 
     results = modWorkflow(dogmeVersion, theModel, modDir)
 }
+
+workflow remap {
+    modDir = getParamOrDefault(params.modDir, defaultModDir)
+    params.modDir = modDir
+
+    def modificationsMap = [
+        "RNA": 'inosine_m6A,pseU,m5C',
+        "DNA": '5mCG_5hmCG,6mA'
+    ]
+
+    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
+
+    results = remapWorkflow(dogmeVersion, theModel, modDir)
+}
+
 
 workflow reports {
     reportsWorkflow(dogmeVersion, params.modDir)
