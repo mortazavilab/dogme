@@ -43,3 +43,5 @@ Running Dogme on typical dataset can take more than 24 hours, therefore it is re
   nextflow run mortazavilab/dogme -c yourconfig.conf
 ```
 By default, the pipeline will create several folders within the launch directory such as bams, bedMethyl, fastqs, and kallisto - all of which can be customized in the config file. If you need to resume your work add '-resume' to the nextflow command after deleting the html report and trace files.
+
+You can also use part of the workflow to only generate a report (-entry reports) or to remap the reads starting from unmapped bam file (-entry remap). 
