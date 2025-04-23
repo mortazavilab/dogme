@@ -320,8 +320,7 @@ workflow modWorkflow {
     
     // Run minimap
     mappedBam = minimapTask(unmappedbam)
-    // Create a channel containing only the BAM file path for the first task
-    firstBam = mappedBam.map{bam, bai -> bam}
+
     
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
         // Run extractFastq
@@ -332,8 +331,10 @@ workflow modWorkflow {
 
     // unified pipeline
     if (params.readType == 'DNA') { 
-        bedfiles = modkitTask(firstBam)       
+        bedfiles = modkitTask(mappedBam)       
     } else if (params.readType == 'RNA') {
+        // Create a channel containing only the BAM file path for the first task
+        firstBam = mappedBam.map{bam, bai -> bam}
         strands = separateStrandsTask(firstBam) // Invoke separateStrandsTask once
         
         // Extract plus and minus strand outputs
@@ -368,8 +369,7 @@ workflow remapWorkflow {
     
     // Run minimap
     mappedBam = minimapTask(unmappedbam)
-    // Create a channel containing only the BAM file path for the first task
-    firstBam = mappedBam.map{bam, bai -> bam}
+   
     
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
         // Run extractFastq
@@ -380,8 +380,10 @@ workflow remapWorkflow {
 
     // unified pipeline
     if (params.readType == 'DNA') { 
-        bedfiles = modkitTask(firstBam)       
+        bedfiles = modkitTask(mappedBam)       
     } else if (params.readType == 'RNA') {
+        // Create a channel containing only the BAM file path for the first task
+        firstBam = mappedBam.map{bam, bai -> bam}
         strands = separateStrandsTask(firstBam) // Invoke separateStrandsTask once
         
         // Extract plus and minus strand outputs
