@@ -160,6 +160,13 @@ process modkitTask {
     println("modkitTask inputFile: ${inputFile}")
     println("modkitTask params.sample: ${params.sample}")
     println("modkitTask params.readType: ${params.readType}")
+    println("modkitTask params.modkitFilterThreshold: ${params.modkitFilterThreshold}") // Added for clarity
+
+    // Build the filter threshold argument conditionally
+    def filterThresholdArg = ''
+    if (params.modkitFilterThreshold != null && params.modkitFilterThreshold != '') {
+        filterThresholdArg = "--filter-threshold ${params.modkitFilterThreshold}"
+    }
 
     """
     . ${params.scriptEnv}
@@ -177,7 +184,9 @@ process modkitTask {
         # If neither .plus nor .minus, it will retain the default .bed
     fi
     echo "bedFileOutput: \${bedFileOutput}"
-    modkit pileup -t 12 --filter-threshold 0.9 "${inputFile}" \${bedFileOutput}
+
+    # Use the conditionally built filterThresholdArg variable
+    modkit pileup -t 12 ${filterThresholdArg} "${inputFile}" \${bedFileOutput}
     """
 }
 
