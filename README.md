@@ -12,7 +12,6 @@ The current version of Dogme has been tested on SLURM clusters and on Macs with 
 | kallisto | 0.51.1  |
 | bustools | 0.43.2  |
 
-You can copy and paste this table directly into your GitHub README.md file. The table will be rendered properly in GitHub's markdown viewer.
 You must first install dorado, minimap2, samtools, modkit, kallisto, and bustools, and the latest version of nextflow and add their paths to the dogme.profile file in the launch directory or create an empty file of the same name. 
 ### Prerequisites:
 Prerequisites include installing nextflow, using java/17 or better, installing modkit, installing minimap2, installing kallisto (compiled for long-reads), and installing bustools.
