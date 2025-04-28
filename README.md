@@ -22,7 +22,7 @@ The config file must be updated to the list where the top directory containing t
 
 ``` 
 params {
-    sample = 'nxtest'
+    sample = 'C2C12_RNA_r1'
     //readType can either be 'RNA', 'DNA' or 'CDNA'
     readType = 'RNA'
     // modification type should be set as necessary if different from 'inosine_m6A,pseU,m5C' for RNA and '5mCG_5hmCG,6mA' for DNA. 
@@ -32,6 +32,22 @@ params {
     perMod = 5
     // change if the launch directory is not where the pod5 and output directories should go
     topDir = "${launchDir}"
+
+    // the following file should be edited to add all the necessary paths for commands such as
+    // dorado, samtools, minimap2, kallisto, and bustools
+    scriptEnv = "${launchDir}/dogme.profile"
+
+    // needs to be modified to match the right genomic reference
+    genomeRef = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/GRCm39.primary_assembly.genome.fa'
+    annotRef = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/gencode.vM36.annotation.gtf'
+    kallistoIndex = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/mm39GencM36_k63.idx'
+    t2g = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/mm39GencM36_k63.t2g'
+    
+    //default accuracy is sup
+    accuracy = "sup"
+    // change this value if 0.9 is too strict
+    // if set to null or '' then modkit will determine its threshold by sampling reads. 
+    modkitFilterThreshold = 0.9
 ```
   
 Be sure to change the process section of the example config file to reflect your cluster environment. 
