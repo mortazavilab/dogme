@@ -285,6 +285,9 @@ process splitModificationTask {
 
         # Extract m5C modifications (Plus & Minus strands)
         grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}.bed"
+
+        # Extract Nm modifications (Plus & Minus strands)
+        grep -Ew '19228|19229|19227|69426' "${inputFile}" > "\${base_name/filtered*/Nm.filtered}.bed"
     fi
     """
 }
