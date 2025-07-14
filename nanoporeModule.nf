@@ -1,6 +1,5 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
-
 process softwareVTask {
     input:
     val version
@@ -8,7 +7,6 @@ process softwareVTask {
     output:
     path "${params.sample}.softwareVersion.txt"
     publishDir params.topDir, mode: 'copy'
-
     script:
     """
     . ${params.scriptEnv}
@@ -17,10 +15,8 @@ process softwareVTask {
     
     doradoV=\$(dorado -v 2>&1)
     echo "dorado \$doradoV" >> "${params.sample}.softwareVersion.txt"
-
     samtoolsV=\$(samtools version |grep samtools)
     echo \$samtoolsV >> "${params.sample}.softwareVersion.txt"
-
     minimap2V=\$(minimap2 --version 2>&1)
     echo "minimap2 \$minimap2V" >> "${params.sample}.softwareVersion.txt"
     
@@ -32,7 +28,6 @@ process softwareVTask {
     if [[ "${params.readType}" == "CDNA" ]] || [[ "${params.readType}" == "RNA" ]]; then
     kallistoV=\$(kallisto version)
     echo \$kallistoV >> "${params.sample}.softwareVersion.txt"
-
     bustoolsV=\$(bustools version)
     echo \$bustoolsV >> "${params.sample}.softwareVersion.txt"
     fi
@@ -46,14 +41,12 @@ process softwareVTask {
     """
 }
 
-
 process doradoDownloadTask {
     input:
     val dirPath
     val doradoModel
     output:
     val dirPath
-
     script:
     """
     echo "${dirPath}"
@@ -71,16 +64,13 @@ process doradoTask {
     val modDirIgnore
     path modDirGood
     val doradoModel
-
     output:
     path "${inputFile.simpleName}.bam"
     publishDir params.dorDir, mode: 'copy'
-
     script:
     """
     . ${params.scriptEnv}
     mkdir -p ${params.dorDir}
-
     dorado basecaller ${doradoModel} --models-directory ${modDirGood}  --estimate-poly-a --batchsize 32 $inputFile > "${inputFile.simpleName}.bam"
     """
 }
@@ -90,9 +80,7 @@ process mergeBamsTask {
     val fileCount
     output:
     path "${params.sample}.unmapped.bam"
-
     publishDir params.bamDir, mode: 'copy'
-
     script:
     """
     . ${params.scriptEnv}
@@ -102,30 +90,24 @@ process mergeBamsTask {
 
 process minimapTask {
     input:
-
-    path inputFile
+    tuple path(inputFile), val(genomeRef), val(annotRef), val(genomeName)
     output:
-    path "${params.sample}.*"
-
+    tuple path("${params.sample}.${genomeName}.bam"), path("${params.sample}.${genomeName}.bam.bai")
     publishDir params.bamDir, mode: 'copy'
-
     script:
     """
     . ${params.scriptEnv}
-    
-     if [[ "${params.readType}" == "RNA" ]]; then
-        minimap2_opts="-ax splice -uf --junc-bed ${params.annotRef}"
+    if [[ "${params.readType}" == "RNA" ]]; then
+        minimap2_opts="-ax splice -uf --junc-bed ${annotRef}"
     elif [[ "${params.readType}" == "CDNA" ]]; then
-        minimap2_opts="-ax splice:hq -uf --junc-bed ${params.annotRef}"  
+        minimap2_opts="-ax splice:hq -uf --junc-bed ${annotRef}"  
     else
         minimap2_opts="-ax lr:hq"  
     fi
-    
-    
     samtools fastq --threads 64 -T MM,ML,pt ${params.sample}.unmapped.bam | \
-    minimap2 -t 64 \$minimap2_opts --secondary=no --MD -y ${params.genomeRef} - | \
-    samtools sort - --threads 64 > ${params.sample}.bam \
-    && samtools index -@ 64 ${params.sample}.bam
+    minimap2 -t 64 \$minimap2_opts --secondary=no --MD -y ${genomeRef} - | \
+    samtools sort - --threads 64 > ${params.sample}.${genomeName}.bam \
+    && samtools index -@ 64 ${params.sample}.${genomeName}.bam
     """
 }
 
@@ -155,19 +137,16 @@ process modkitTask {
     path "*.bed"
     
     publishDir params.bedDir, mode: 'copy'
-
     script:
     println("modkitTask inputFile: ${inputFile}")
     println("modkitTask params.sample: ${params.sample}")
     println("modkitTask params.readType: ${params.readType}")
     println("modkitTask params.modkitFilterThreshold: ${params.modkitFilterThreshold}") // Added for clarity
-
     // Build the filter threshold argument conditionally
     def filterThresholdArg = ''
     if (params.modkitFilterThreshold != null && params.modkitFilterThreshold != '') {
         filterThresholdArg = "--filter-threshold ${params.modkitFilterThreshold}"
     }
-
     """
     . ${params.scriptEnv}
     echo "params.readType: ${params.readType}"
@@ -184,7 +163,6 @@ process modkitTask {
         # If neither .plus nor .minus, it will retain the default .bed
     fi
     echo "bedFileOutput: \${bedFileOutput}"
-
     # Use the conditionally built filterThresholdArg variable
     modkit pileup -t 12 ${filterThresholdArg} "${inputFile}" \${bedFileOutput}
     """
@@ -193,12 +171,9 @@ process modkitTask {
 process filterbedTask {
     input:
     path inputFile
-
     output:
     path "*.filtered*.bed"
-
     publishDir params.bedDir, mode: 'copy'
-
     script:
     """
     output_prefix="${inputFile.baseName}"
@@ -212,9 +187,7 @@ process extractfastqTask {
     path inputFile
     output:
     path "${params.sample}.fastq.gz"
-
     publishDir params.fastqDir, mode: 'copy'
-
     script:
     """
     . ${params.scriptEnv}
@@ -228,21 +201,14 @@ process kallistoTask {
     path inputFile
     output:
     path "${params.sample}"
-
     publishDir params.kallistoDir, mode: 'copy'
-
     script:
     """
     . ${params.scriptEnv}
     mkdir -p ${params.sample}
-
-
     kallisto bus --long --threshold 0.8 -x bulk -i ${params.kallistoIndex} -t ${task.cpus} -o ${params.sample} "${inputFile}"
-
     bustools sort -t ${task.cpus} ${params.sample}/output.bus -o ${params.sample}/sorted.bus
-
     bustools count ${params.sample}/sorted.bus -t ${params.sample}/transcripts.txt  -e ${params.sample}/matrix.ec  -o ${params.sample}/count --cm -m -g ${params.t2g}
-
     kallisto quant-tcc -t ${task.cpus} --long -P ONT ${params.sample}/count.mtx -i ${params.kallistoIndex} -f ${params.sample}/flens.txt -e ${params.sample}/count.ec.txt -o ${params.sample}
     """
 }
@@ -253,16 +219,12 @@ process kallistoTask {
 process splitModificationTask {
     input:
     path inputFile
-
     output:
     path "*.filtered.*"
-
     publishDir params.bedDir, mode: 'copy'
-
     script:
     """
     . ${params.scriptEnv}
-
     if [[ "${params.readType}" == "DNA" ]]; then
         # Extract 5mCG (methylation)
         grep -w 'm' "${inputFile}" > "${inputFile.baseName}.5mCG.filtered.bed"
@@ -272,20 +234,14 @@ process splitModificationTask {
         grep -w 'a' "${inputFile}" > "${inputFile.baseName}.6mA.filtered.bed"
     elif [[ "${params.readType}" == "RNA" ]]; then
         base_name="\$(basename "${inputFile}" .bed)"
-
-
         # Extract m6A modifications (Plus & Minus strands)
         grep -w 'a' "${inputFile}" > "\${base_name/filtered*/m6A.filtered}.bed"
-
         # Extract inosine modifications (Plus & Minus strands)
         grep -w '17596' "${inputFile}" > "\${base_name/filtered*/inosine.filtered}.bed"
-
         # Extract pseudouridine (pseU) modifications (Plus & Minus strands)
         grep -w '17802' "${inputFile}" > "\${base_name/filtered*/pseU.filtered}.bed"
-
         # Extract m5C modifications (Plus & Minus strands)
         grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}.bed"
-
         # Extract Nm modifications (Plus & Minus strands)
         grep -Ew '19228|19229|19227|69426' "${inputFile}" > "\${base_name/filtered*/Nm.filtered}.bed"
     fi
@@ -294,15 +250,12 @@ process splitModificationTask {
 
 process generateReport {
     tag "Generate metadata report"
-
     input:
     path report_inputs
     path results
-
     output:
     path "report.tsv", emit: report
     publishDir params.topDir, mode: 'copy'
-
     script:
     """
     python ${projectDir}/scripts/generate_report.py -i ${report_inputs} -o report.tsv
@@ -316,9 +269,9 @@ workflow modWorkflow {
     modelDirectory
     
     main: 
-    // Download the latest dorado modelss
-     modelPath = doradoDownloadTask(modelDirectory, theModel)
-    //Report all the software versions in report file  
+    // Download the latest dorado models
+    modelPath = doradoDownloadTask(modelDirectory, theModel)
+    // Report all the software versions in report file  
     softwareVTask(theVersion, modelPath)
     def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
     // Run doradoTask for each input file
@@ -332,30 +285,21 @@ workflow modWorkflow {
     
     // Run minimap
     mappedBam = minimapTask(unmappedbam)
-
-    
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
         // Run extractFastq
         fastqFile = extractfastqTask(unmappedbam)
         // Run kallistoTask using the extracted FASTQ file
         kallistoResults = kallistoTask(fastqFile)
     }
-
-    // unified pipeline
+    // Unified pipeline
     if (params.readType == 'DNA') { 
         bedfiles = modkitTask(mappedBam)       
     } else if (params.readType == 'RNA') {
-        // Create a channel containing only the BAM file path for the first task
-        firstBam = mappedBam.map{bam, bai -> bam}
-        strands = separateStrandsTask(firstBam) // Invoke separateStrandsTask once
-        
-        // Extract plus and minus strand outputs
-        plusStrand = strands.plus_strand
-        minusStrand = strands.minus_strand
-        
-        // Combine plus and minus strand outputs into a single channel of tuples (bam, bai)
-        combinedStrand = plusStrand.concat(minusStrand)
-        bedfiles = modkitTask(combinedStrand)
+        // Split ALL mapped BAMs into plus/minus strands
+        separateStrandsTask(mappedBam)
+        bedfiles = modkitTask(
+            separateStrandsTask.plus_strand.concat(separateStrandsTask.minus_strand)
+        )
     }
     
     if (params.readType == 'RNA' || params.readType == 'DNA') {
@@ -367,46 +311,28 @@ workflow modWorkflow {
         generateReport(launchDir, splitResults)
     }  
 }
-
 workflow remapWorkflow {
     take:
     theVersion
     theModel 
     modelDirectory
-    
-    main: 
-    
-    // start from unmapped bam file
+    main:
     def unmappedbam = Channel.fromPath("${params.bamDir}/*.unmapped.bam")
-    
-    // Run minimap
-    mappedBam = minimapTask(unmappedbam)
-   
-    
-    if (params.readType == 'RNA' || params.readType == 'CDNA') {
-        // Run extractFastq
-        fastqFile = extractfastqTask(unmappedbam)
-        // Run kallistoTask using the extracted FASTQ file
-        kallistoResults = kallistoTask(fastqFile)
+    def genomeAnnotChannel = Channel.fromList(params.genome_annot_refs)
+    // Pair the single BAM with each genome/annotation/name
+    unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
+        tuple(bam, ref.genome, ref.annot, ref.name)
     }
-
-    // unified pipeline
-    if (params.readType == 'DNA') { 
-        bedfiles = modkitTask(mappedBam)       
-    } else if (params.readType == 'RNA') {
-        // Create a channel containing only the BAM file path for the first task
-        firstBam = mappedBam.map{bam, bai -> bam}
-        strands = separateStrandsTask(firstBam) // Invoke separateStrandsTask once
-        
-        // Extract plus and minus strand outputs
-        plusStrand = strands.plus_strand
-        minusStrand = strands.minus_strand
-        
-        // Combine plus and minus strand outputs into a single channel of tuples (bam, bai)
-        combinedStrand = plusStrand.concat(minusStrand)
-        bedfiles = modkitTask(combinedStrand)
+    mappedBams = minimapTask(unmappedBams)  // <-- use a unique name here
+    if (params.readType == 'RNA') {
+        // Only the BAM file (first element of tuple) to separateStrandsTask
+        separateStrandsTask(mappedBams.map { it[0] })
+        bedfiles = modkitTask(
+            separateStrandsTask.out.plus_strand.concat(separateStrandsTask.out.minus_strand)
+        )
+    } else if (params.readType == 'DNA') {
+        bedfiles = modkitTask(mappedBams.map { it[0] })
     }
-    
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         filterbeds = filterbedTask(bedfiles)
         splitResults = splitModificationTask(filterbeds)
@@ -414,9 +340,8 @@ workflow remapWorkflow {
     } else {
         splitResults = Channel.empty()
         generateReport(launchDir, splitResults)
-    }  
+    }
 }
-
 
 workflow reportsWorkflow {
     take:
@@ -431,10 +356,3 @@ workflow reportsWorkflow {
     existingResults = Channel.fromPath("${params.bedDir}/*.filtered.*")
     generateReport(launchDir, existingResults)
 }
-
-
-
-
-
-
-
