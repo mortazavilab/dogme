@@ -113,58 +113,42 @@ process minimapTask {
 
 //splitbam files into plus and minus strands for direct rna
 process separateStrandsTask {
-    input: 
-    path inputbam
+    input:
+    tuple path(inputbam), val(genomeName)
     output:
-    tuple path("${params.sample}.plus.bam"), path("${params.sample}.plus.bam.bai"), emit: plus_strand
-    tuple path("${params.sample}.minus.bam"), path("${params.sample}.minus.bam.bai"), emit: minus_strand
-    
+    tuple path("${params.sample}.${genomeName}.plus.bam"), path("${params.sample}.${genomeName}.plus.bam.bai"), val(genomeName), emit: plus_strand
+    tuple path("${params.sample}.${genomeName}.minus.bam"), path("${params.sample}.${genomeName}.minus.bam.bai"), val(genomeName), emit: minus_strand
+
     publishDir params.bamDir, mode: 'copy'
-    
+
     script:
     """
     . ${params.scriptEnv}
-    samtools view -b -f 16 ${inputbam} -o ${params.sample}.minus.bam && samtools index -@ 32 ${params.sample}.minus.bam
-    samtools view -b -F 16 ${inputbam} -o ${params.sample}.plus.bam && samtools index -@ 32 ${params.sample}.plus.bam
+    samtools view -b -f 16 ${inputbam} -o ${params.sample}.${genomeName}.minus.bam && samtools index -@ 32 ${params.sample}.${genomeName}.minus.bam
+    samtools view -b -F 16 ${inputbam} -o ${params.sample}.${genomeName}.plus.bam && samtools index -@ 32 ${params.sample}.${genomeName}.plus.bam
     """
 }
 
 process modkitTask {
     input:
-    tuple path(inputFile), path(inputBai) // Accept a tuple of BAM and BAI files
-    
+    tuple path(inputFile), path(inputBai), val(genomeName)
+
     output:
     path "*.bed"
-    
+
     publishDir params.bedDir, mode: 'copy'
     script:
-    println("modkitTask inputFile: ${inputFile}")
-    println("modkitTask params.sample: ${params.sample}")
-    println("modkitTask params.readType: ${params.readType}")
-    println("modkitTask params.modkitFilterThreshold: ${params.modkitFilterThreshold}") // Added for clarity
-    // Build the filter threshold argument conditionally
-    def filterThresholdArg = ''
-    if (params.modkitFilterThreshold != null && params.modkitFilterThreshold != '') {
-        filterThresholdArg = "--filter-threshold ${params.modkitFilterThreshold}"
-    }
     """
     . ${params.scriptEnv}
-    echo "params.readType: ${params.readType}"
-    bedFileOutput="${params.sample}.bed" # Default value
-       if [[ "${params.readType}" == "RNA" ]]; then
-        echo "Inside RNA block"
-        if [[ "${inputFile}" == *".plus."* ]]; then
-            echo "Setting bedFileOutput for .plus"
-            bedFileOutput="${params.sample}.plus.bed"
-        elif [[ "${inputFile}" == *".minus."* ]]; then
-            echo "Setting bedFileOutput for .minus"
-            bedFileOutput="${params.sample}.minus.bed"
+    bedFileOutput="\${params.sample}.\${genomeName}.bed" # Default value
+    if [[ "\${params.readType}" == "RNA" ]]; then
+        if [[ "\${inputFile}" == *".plus."* ]]; then
+            bedFileOutput="\${params.sample}.\${genomeName}.plus.bed"
+        elif [[ "\${inputFile}" == *".minus."* ]]; then
+            bedFileOutput="\${params.sample}.\${genomeName}.minus.bed"
         fi
-        # If neither .plus nor .minus, it will retain the default .bed
     fi
-    echo "bedFileOutput: \${bedFileOutput}"
-    # Use the conditionally built filterThresholdArg variable
-    modkit pileup -t 12 ${filterThresholdArg} "${inputFile}" \${bedFileOutput}
+    modkit pileup -t 12 ${filterThresholdArg} "\${inputFile}" "\${bedFileOutput}"
     """
 }
 
@@ -325,13 +309,17 @@ workflow remapWorkflow {
     }
     mappedBams = minimapTask(unmappedBams)  // <-- use a unique name here
     if (params.readType == 'RNA') {
-        // Only the BAM file (first element of tuple) to separateStrandsTask
-        separateStrandsTask(mappedBams.map { it[0] })
+        // mappedBams is a tuple: (bam, bai, genomeName)
+        separateStrandsTask(
+            mappedBams.map { bam, bai, genomeName -> tuple(bam, genomeName) }
+        )
         bedfiles = modkitTask(
             separateStrandsTask.out.plus_strand.concat(separateStrandsTask.out.minus_strand)
         )
     } else if (params.readType == 'DNA') {
-        bedfiles = modkitTask(mappedBams.map { it[0] })
+        bedfiles = modkitTask(
+            mappedBams.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
+        )
     }
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         filterbeds = filterbedTask(bedfiles)
