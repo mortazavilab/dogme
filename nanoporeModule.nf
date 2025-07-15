@@ -92,7 +92,7 @@ process minimapTask {
     input:
     tuple path(inputFile), val(genomeRef), val(annotRef), val(genomeName)
     output:
-    tuple path("${params.sample}.${genomeName}.bam"), path("${params.sample}.${genomeName}.bam.bai")
+    tuple path("${params.sample}.${genomeName}.bam"), path("${params.sample}.${genomeName}.bam.bai"), val(genomeName)
     publishDir params.bamDir, mode: 'copy'
     script:
     """
@@ -277,13 +277,16 @@ workflow modWorkflow {
     }
     // Unified pipeline
     if (params.readType == 'DNA') { 
-        bedfiles = modkitTask(mappedBam)       
+        // mappedBam is a tuple: (bam, bai)
+        // Wrap mappedBam in a channel if it's a single tuple
+        bedfiles = modkitTask(mappedBam.map { bam, bai -> tuple(bam, bai, "default") })
     } else if (params.readType == 'RNA') {
         // Split ALL mapped BAMs into plus/minus strands
         separateStrandsTask(mappedBam)
-        bedfiles = modkitTask(
-            separateStrandsTask.plus_strand.concat(separateStrandsTask.minus_strand)
-        )
+        // Concatenate plus and minus strand outputs, which are channels of tuples
+        combinedStrand = separateStrandsTask.plus_strand.concat(separateStrandsTask.minus_strand)
+        // Pass as a channel of tuples to modkitTask
+        bedfiles = modkitTask(combinedStrand)
     }
     
     if (params.readType == 'RNA' || params.readType == 'DNA') {
@@ -307,19 +310,25 @@ workflow remapWorkflow {
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
-    mappedBams = minimapTask(unmappedBams)  // <-- use a unique name here
+    mappedBams = minimapTask(unmappedBams)
     if (params.readType == 'RNA') {
-        // mappedBams is a tuple: (bam, bai, genomeName)
-        separateStrandsTask(
-            mappedBams.map { bam, bai, genomeName -> tuple(bam, genomeName) }
-        )
-        bedfiles = modkitTask(
-            separateStrandsTask.out.plus_strand.concat(separateStrandsTask.out.minus_strand)
-        )
+        //mappedBams.view { it -> println "[DEBUG] mappedBams: " + it + " (" + it.getClass() + ")" }
+        // Fix: convert ArrayList to tuple using spread operator
+        def mappedBamsTuples = mappedBams.map { it -> tuple(*it) }
+        //mappedBamsTuples.view { it -> println "[DEBUG] mappedBamsTuples: " + it + " (" + it.getClass() + ")" }
+        def mappedBamsForStrands = mappedBamsTuples.map { bam, bai, genomeName -> tuple(bam, genomeName) }
+        //mappedBamsForStrands.view { it -> println "[DEBUG] mappedBamsForStrands: " + it + " (" + it.getClass() + ")" }
+        def strands = separateStrandsTask(mappedBamsForStrands)
+        def plusStrand = strands.plus_strand
+        def minusStrand = strands.minus_strand
+        def combinedStrand = plusStrand.concat(minusStrand)
+        bedfiles = modkitTask(combinedStrand)
     } else if (params.readType == 'DNA') {
-        bedfiles = modkitTask(
-            mappedBams.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
-        )
+        def mappedBamsTuples = mappedBams.map { it -> tuple(*it) }
+        //mappedBamsTuples.view { it -> println "[DEBUG] mappedBamsTuples: " + it + " (" + it.getClass() + ")" }
+        def mappedBamsForModkit = mappedBamsTuples.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
+        //mappedBamsForModkit.view { it -> println "[DEBUG] mappedBamsForModkit: " + it + " (" + it.getClass() + ")" }
+        bedfiles = modkitTask(mappedBamsForModkit)
     }
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         filterbeds = filterbedTask(bedfiles)
@@ -344,3 +353,4 @@ workflow reportsWorkflow {
     existingResults = Channel.fromPath("${params.bedDir}/*.filtered.*")
     generateReport(launchDir, existingResults)
 }
+
