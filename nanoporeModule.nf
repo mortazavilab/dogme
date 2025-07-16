@@ -138,17 +138,22 @@ process modkitTask {
 
     publishDir params.bedDir, mode: 'copy'
     script:
+    // Build the filter threshold argument conditionally
+    def filterThresholdArg = ''
+    if (params.modkitFilterThreshold != null && params.modkitFilterThreshold != '') {
+        filterThresholdArg = "--filter-threshold ${params.modkitFilterThreshold}"
+    }
     """
     . ${params.scriptEnv}
-    bedFileOutput="\${params.sample}.\${genomeName}.bed" # Default value
-    if [[ "\${params.readType}" == "RNA" ]]; then
-        if [[ "\${inputFile}" == *".plus."* ]]; then
-            bedFileOutput="\${params.sample}.\${genomeName}.plus.bed"
-        elif [[ "\${inputFile}" == *".minus."* ]]; then
-            bedFileOutput="\${params.sample}.\${genomeName}.minus.bed"
+    bedFileOutput="${params.sample}.${genomeName}.bed" # Default value
+    if [[ "${params.readType}" == "RNA" ]]; then
+        if [[ "${inputFile}" == *".plus."* ]]; then
+            bedFileOutput="${params.sample}.${genomeName}.plus.bed"
+        elif [[ "${inputFile}" == *".minus."* ]]; then
+            bedFileOutput="${params.sample}.${genomeName}.minus.bed"
         fi
     fi
-    modkit pileup -t 12 ${filterThresholdArg} "\${inputFile}" "\${bedFileOutput}"
+    modkit pileup -t 12 ${filterThresholdArg} "${inputFile}" "\${bedFileOutput}"
     """
 }
 
