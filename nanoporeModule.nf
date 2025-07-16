@@ -258,27 +258,16 @@ workflow modWorkflow {
     modelDirectory
     
     main: 
-    // Download the latest dorado models
     modelPath = doradoDownloadTask(modelDirectory, theModel)
-    // Report all the software versions in report file  
     softwareVTask(theVersion, modelPath)
     def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
-    // Run doradoTask for each input file
     bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
-    
-    // Count all of the files as a way to force synchronization before merging
     fileCount = bamFiles.map { it.size() }.first()
-    
-    // Run merge task using the file count
     unmappedbam = mergeBamsTask(fileCount)
-    
-    // Prepare genome annotation channel if needed (for multi-genome support)
     def genomeAnnotChannel = Channel.fromList(params.genome_annot_refs)
-    // Pair the single BAM with each genome/annotation/name
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
-
     mappedBams = minimapTask(unmappedBams)
 
     if (params.readType == 'RNA') {
@@ -309,31 +298,25 @@ workflow remapWorkflow {
     theVersion
     theModel 
     modelDirectory
+
     main:
     def unmappedbam = Channel.fromPath("${params.bamDir}/*.unmapped.bam")
     def genomeAnnotChannel = Channel.fromList(params.genome_annot_refs)
-    // Pair the single BAM with each genome/annotation/name
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
     mappedBams = minimapTask(unmappedBams)
     if (params.readType == 'RNA') {
-        //mappedBams.view { it -> println "[DEBUG] mappedBams: " + it + " (" + it.getClass() + ")" }
-        // Fix: convert ArrayList to tuple using spread operator
-        def mappedBamsTuples = mappedBams.map { it -> tuple(*it) }
-        //mappedBamsTuples.view { it -> println "[DEBUG] mappedBamsTuples: " + it + " (" + it.getClass() + ")" }
-        def mappedBamsForStrands = mappedBamsTuples.map { bam, bai, genomeName -> tuple(bam, genomeName) }
-        //mappedBamsForStrands.view { it -> println "[DEBUG] mappedBamsForStrands: " + it + " (" + it.getClass() + ")" }
-        def strands = separateStrandsTask(mappedBamsForStrands)
-        def plusStrand = strands.plus_strand
-        def minusStrand = strands.minus_strand
-        def combinedStrand = plusStrand.concat(minusStrand)
+        mappedBamsTuplesRNA = mappedBams.map { it -> tuple(*it) }
+        mappedBamsForStrands = mappedBamsTuplesRNA.map { bam, bai, genomeName -> tuple(bam, genomeName) }
+        strands = separateStrandsTask(mappedBamsForStrands)
+        plusStrand = strands.plus_strand
+        minusStrand = strands.minus_strand
+        combinedStrand = plusStrand.concat(minusStrand)
         bedfiles = modkitTask(combinedStrand)
     } else if (params.readType == 'DNA') {
-        def mappedBamsTuples = mappedBams.map { it -> tuple(*it) }
-        //mappedBamsTuples.view { it -> println "[DEBUG] mappedBamsTuples: " + it + " (" + it.getClass() + ")" }
-        def mappedBamsForModkit = mappedBamsTuples.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
-        //mappedBamsForModkit.view { it -> println "[DEBUG] mappedBamsForModkit: " + it + " (" + it.getClass() + ")" }
+        mappedBamsTuplesDNA = mappedBams.map { it -> tuple(*it) }
+        mappedBamsForModkit = mappedBamsTuplesDNA.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
         bedfiles = modkitTask(mappedBamsForModkit)
     }
     if (params.readType == 'RNA' || params.readType == 'DNA') {
