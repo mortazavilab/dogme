@@ -272,28 +272,29 @@ workflow modWorkflow {
     // Run merge task using the file count
     unmappedbam = mergeBamsTask(fileCount)
     
-    // Run minimap
-    mappedBam = minimapTask(unmappedbam)
-    if (params.readType == 'RNA' || params.readType == 'CDNA') {
-        // Run extractFastq
-        fastqFile = extractfastqTask(unmappedbam)
-        // Run kallistoTask using the extracted FASTQ file
-        kallistoResults = kallistoTask(fastqFile)
+    // Prepare genome annotation channel if needed (for multi-genome support)
+    def genomeAnnotChannel = Channel.fromList(params.genome_annot_refs)
+    // Pair the single BAM with each genome/annotation/name
+    unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
+        tuple(bam, ref.genome, ref.annot, ref.name)
     }
-    // Unified pipeline
-    if (params.readType == 'DNA') { 
-        // mappedBam is a tuple: (bam, bai)
-        // Wrap mappedBam in a channel if it's a single tuple
-        bedfiles = modkitTask(mappedBam.map { bam, bai -> tuple(bam, bai, "default") })
-    } else if (params.readType == 'RNA') {
-        // Split ALL mapped BAMs into plus/minus strands
-        separateStrandsTask(mappedBam)
-        // Concatenate plus and minus strand outputs, which are channels of tuples
-        combinedStrand = separateStrandsTask.plus_strand.concat(separateStrandsTask.minus_strand)
-        // Pass as a channel of tuples to modkitTask
+
+    mappedBams = minimapTask(unmappedBams)
+
+    if (params.readType == 'RNA') {
+        def mappedBamsTuples = mappedBams.map { it -> tuple(*it) }
+        def mappedBamsForStrands = mappedBamsTuples.map { bam, bai, genomeName -> tuple(bam, genomeName) }
+        def strands = separateStrandsTask(mappedBamsForStrands)
+        def plusStrand = strands.plus_strand
+        def minusStrand = strands.minus_strand
+        def combinedStrand = plusStrand.concat(minusStrand)
         bedfiles = modkitTask(combinedStrand)
+    } else if (params.readType == 'DNA') {
+        def mappedBamsTuples = mappedBams.map { it -> tuple(*it) }
+        def mappedBamsForModkit = mappedBamsTuples.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
+        bedfiles = modkitTask(mappedBamsForModkit)
     }
-    
+
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         filterbeds = filterbedTask(bedfiles)
         splitResults = splitModificationTask(filterbeds)
