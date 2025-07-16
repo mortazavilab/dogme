@@ -282,16 +282,16 @@ workflow modWorkflow {
     mappedBams = minimapTask(unmappedBams)
 
     if (params.readType == 'RNA') {
-        def mappedBamsTuples = mappedBams.map { it -> tuple(*it) }
-        def mappedBamsForStrands = mappedBamsTuples.map { bam, bai, genomeName -> tuple(bam, genomeName) }
-        def strands = separateStrandsTask(mappedBamsForStrands)
-        def plusStrand = strands.plus_strand
-        def minusStrand = strands.minus_strand
-        def combinedStrand = plusStrand.concat(minusStrand)
+        mappedBamsTuplesRNA = mappedBams.map { it -> tuple(*it) }
+        mappedBamsForStrands = mappedBamsTuplesRNA.map { bam, bai, genomeName -> tuple(bam, genomeName) }
+        strands = separateStrandsTask(mappedBamsForStrands)
+        plusStrand = strands.plus_strand
+        minusStrand = strands.minus_strand
+        combinedStrand = plusStrand.concat(minusStrand)
         bedfiles = modkitTask(combinedStrand)
     } else if (params.readType == 'DNA') {
-        def mappedBamsTuples = mappedBams.map { it -> tuple(*it) }
-        def mappedBamsForModkit = mappedBamsTuples.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
+        mappedBamsTuplesDNA = mappedBams.map { it -> tuple(*it) }
+        mappedBamsForModkit = mappedBamsTuplesDNA.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
         bedfiles = modkitTask(mappedBamsForModkit)
     }
 
