@@ -264,6 +264,14 @@ workflow modWorkflow {
     bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
+    
+    if (params.readType == 'RNA' || params.readType == 'CDNA') {
+        // Run extractFastq
+        fastqFile = extractfastqTask(unmappedbam)
+        // Run kallistoTask using the extracted FASTQ file
+        kallistoResults = kallistoTask(fastqFile)
+    }
+
     def genomeAnnotChannel = Channel.fromList(params.genome_annot_refs)
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
@@ -293,6 +301,7 @@ workflow modWorkflow {
         generateReport(launchDir, splitResults)
     }  
 }
+
 workflow remapWorkflow {
     take:
     theVersion
