@@ -38,8 +38,11 @@ params {
     scriptEnv = "${launchDir}/dogme.profile"
 
     // needs to be modified to match the right genomic reference
-    genomeRef = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/GRCm39.primary_assembly.genome.fa'
-    annotRef = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/gencode.vM36.annotation.gtf'
+     genome_annot_refs = [
+     [name: 'mm39', genome: '/share/crsp/lab/seyedam/share/genomeRef/IGVFFI9282QLXO.fasta', annot: '/share/crsp/lab/seyedam/share/genomeRef/IGVFFI4777RDZK.gtf'],
+     [name: 'C57BL_6J_T2T_v1', genome: '/share/crsp/lab/seyedam/share/genomeRef/C57BL_6J_T2T_v1/unmasked.fa', annot: '/share/crsp/lab/seyedam/share/genomeRef/C57BL_6J_T2T_v1/genes.gtf'],
+     [name: 'CAST_EiJ_T2T_v1', genome: '/share/crsp/lab/seyedam/share/genomeRef/CAST_EiJ_T2T_v1/unmasked.fa', annot: '/share/crsp/lab/seyedam/share/genomeRef/CAST_EiJ_T2T_v1/genes.gtf']
+     ]
     kallistoIndex = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/mm39GencM36_k63.idx'
     t2g = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/mm39GencM36_k63.t2g'
     
