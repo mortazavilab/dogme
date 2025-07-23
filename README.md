@@ -5,7 +5,7 @@ The current version of Dogme has been tested on SLURM clusters and on Macs with 
 
 | Software | Version |
 |----------|---------|
-| dorado   | 0.9.1   |
+| dorado   | 1.0     |
 | samtools | 1.15.1  |
 | minimap2 | 2.28    |
 | mod_kit  | 0.4.3   |
