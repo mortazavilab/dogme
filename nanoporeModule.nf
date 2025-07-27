@@ -105,7 +105,7 @@ process minimapTask {
         minimap2_opts="-ax lr:hq"  
     fi
     samtools fastq --threads 64 -T MM,ML,pt ${params.sample}.unmapped.bam | \
-    minimap2 -t 64 \$minimap2_opts --secondary=no --MD -y ${genomeRef} - | \
+    minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} - | \
     samtools sort - --threads 64 > ${params.sample}.${genomeName}.bam \
     && samtools index -@ 64 ${params.sample}.${genomeName}.bam
     """
@@ -214,25 +214,41 @@ process splitModificationTask {
     script:
     """
     . ${params.scriptEnv}
-    if [[ "${params.readType}" == "DNA" ]]; then
+    if [[ "${params.readType}" == "DNA" ]]; then 
         # Extract 5mCG (methylation)
-        grep -w 'm' "${inputFile}" > "${inputFile.baseName}.5mCG.filtered.bed"
+        if grep -q 'm' "${inputFile}"; then
+            grep -w 'm' "${inputFile}" > "${inputFile.baseName}.5mCG.filtered.bed"
+        fi
         # Extract 5hmCG (hydroxymethylation)
-        grep -w 'h' "${inputFile}" > "${inputFile.baseName}.5hmCG.filtered.bed"
+        if grep -q 'h' "${inputFile}"; then
+            grep -w 'h' "${inputFile}" > "${inputFile.baseName}.5hmCG.filtered.bed"
+        fi
         # Extract 6mA
-        grep -w 'a' "${inputFile}" > "${inputFile.baseName}.6mA.filtered.bed"
+        if grep -q 'a' "${inputFile}"; then
+            grep -w 'a' "${inputFile}" > "${inputFile.baseName}.6mA.filtered.bed"
+        fi
     elif [[ "${params.readType}" == "RNA" ]]; then
         base_name="\$(basename "${inputFile}" .bed)"
         # Extract m6A modifications (Plus & Minus strands)
-        grep -w 'a' "${inputFile}" > "\${base_name/filtered*/m6A.filtered}.bed"
+        if grep -q 'a' "${inputFile}"; then
+            grep -w 'a' "${inputFile}" > "\${base_name/filtered*/m6A.filtered}.bed"
+        fi
         # Extract inosine modifications (Plus & Minus strands)
-        grep -w '17596' "${inputFile}" > "\${base_name/filtered*/inosine.filtered}.bed"
+        if grep -q '17596' "${inputFile}"; then
+            grep -w '17596' "${inputFile}" > "\${base_name/filtered*/inosine.filtered}.bed"
+        fi
         # Extract pseudouridine (pseU) modifications (Plus & Minus strands)
-        grep -w '17802' "${inputFile}" > "\${base_name/filtered*/pseU.filtered}.bed"
+        if grep -q '17802' "${inputFile}"; then
+            grep -w '17802' "${inputFile}" > "\${base_name/filtered*/pseU.filtered}.bed"
+        fi
         # Extract m5C modifications (Plus & Minus strands)
-        grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}.bed"
+        if grep -q 'm' "${inputFile}"; then
+            grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}.bed"
+        fi
         # Extract Nm modifications (Plus & Minus strands)
-        grep -Ew '19228|19229|19227|69426' "${inputFile}" > "\${base_name/filtered*/Nm.filtered}.bed"
+        if grep -qE '19228|19229|19227|69426' "${inputFile}"; then
+            grep -Ew '19228|19229|19227|69426' "${inputFile}" > "\${base_name/filtered*/Nm.filtered}.bed"
+        fi
     fi
     """
 }
@@ -351,4 +367,3 @@ workflow reportsWorkflow {
     existingResults = Channel.fromPath("${params.bedDir}/*.filtered.*")
     generateReport(launchDir, existingResults)
 }
-
