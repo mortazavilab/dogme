@@ -38,16 +38,21 @@ params {
     scriptEnv = "${launchDir}/dogme.profile"
 
     // needs to be modified to match the right genomic reference
-    genomeRef = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/GRCm39.primary_assembly.genome.fa'
-    annotRef = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/gencode.vM36.annotation.gtf'
-    kallistoIndex = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/mm39GencM36_k63.idx'
-    t2g = '/share/crsp/lab/seyedam/share/bridge_dRNA/kallistoref/mm39GencM36_k63.t2g'
+     genome_annot_refs = [
+     [name: 'mm39', genome: '/path/genomeRef/IGVFFI9282QLXO.fasta', annot: '/path/genomeRef/IGVFFI4777RDZK.gtf'],
+     [name: 'C57BL_6J_T2T_v1', genome: '/path/genomeRef/C57BL_6J_T2T_v1/unmasked.fa', annot: '/path/genomeRef/C57BL_6J_T2T_v1/genes.gtf'],
+     [name: 'CAST_EiJ_T2T_v1', genome: '/path/genomeRef/CAST_EiJ_T2T_v1/unmasked.fa', annot: '/path/genomeRef/CAST_EiJ_T2T_v1/genes.gtf']
+     ]
+    kallistoIndex = '/path/kallistoref/mm39GencM36_k63.idx'
+    t2g = '/pathA/kallistoref/mm39GencM36_k63.t2g'
     
     //default accuracy is sup
     accuracy = "sup"
     // change this value if 0.9 is too strict
     // if set to null or '' then modkit will determine its threshold by sampling reads. 
     modkitFilterThreshold = 0.9
+
+    //rest of config file - see dogmetest-param.conf
 ```
   
 Be sure to change the process section of the example config file to reflect your cluster environment. 
