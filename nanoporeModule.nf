@@ -300,11 +300,11 @@ process consolidateOpenChromatinBedTask {
     input:
     tuple val(genomeName), path(bed_files)
     output:
-    path "${params.sample}.${genomeName}.open_chromatin.bed"
-    publishDir "${params.topDir}/open_chromatin", mode: 'copy'
+    path "${params.sample}.${genomeName}.m6Aopen.bed"
+    publishDir "${params.topDir}/openChromatin", mode: 'copy'
     script:
     """
-    cat \$(ls ${bed_files} | sort) > ${params.sample}.${genomeName}.open_chromatin.bed
+    cat \$(ls ${bed_files} | sort) > ${params.sample}.${genomeName}.m6Aopen.bed
     """
 }
 
@@ -313,11 +313,11 @@ process consolidateOpenChromatinBgTask {
     input:
     tuple val(genomeName), path(bg_files)
     output:
-    path "${params.sample}.${genomeName}.open_chromatin.bg"
-    publishDir "${params.topDir}/open_chromatin", mode: 'copy'
+    path "${params.sample}.${genomeName}.m6Aopen.bg"
+    publishDir "${params.topDir}/openChromatin", mode: 'copy'
     script:
     """
-    cat \$(ls ${bg_files} | sort) | sort -k1,1 -k2,2n > ${params.sample}.${genomeName}.open_chromatin.bg
+    cat \$(ls ${bg_files} | sort) | sort -k1,1 -k2,2n > ${params.sample}.${genomeName}.m6Aopen.bg
     """
 }
 
