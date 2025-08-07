@@ -8,7 +8,7 @@ The current version of Dogme has been tested on SLURM clusters and on Macs with 
 | dorado   | 1.0     |
 | samtools | 1.15.1  |
 | minimap2 | 2.28    |
-| mod_kit  | 0.4.3   |
+| mod_kit  | 0.5     |
 | kallisto | 0.51.1  |
 | bustools | 0.43.2  |
 
@@ -56,6 +56,17 @@ params {
 ```
   
 Be sure to change the process section of the example config file to reflect your cluster environment. 
+### Running modkit to call open chromatin in DNA
+Dogme will use modkit 0.5+ with the delivered models in GPU mode using the GPU library, based on the version in the path and several shell script variables defined in your local dogme.profile:
+```
+export MODKITBASE=/path/to/modkit
+export MODKITMODEL=${MODKITBASE}/models/r1041_e82_400bps_hac_v5.2.0@v0.1.0
+# the following are only needed if using the torch version of modkit
+export LIBTORCH=${MODKITBASE}/libtorch
+export DYLD_LIBRARY_PATH=${LIBTORCH}/lib
+export LD_LIBRARY_PATH=${DYLD_LIBRARY_PATH}
+export PATH=${MODKITBASE}/dist_modkit_v0.5.0_5120ef7_tch:$PATH
+```
 ### Running dogme:
 Running Dogme on typical dataset can take more than 24 hours, therefore it is recommended to run Dogme within a job or a saved virtual terminal such as screen or Tmux.  Change your folder to be where you want Dogme to run (the 'launch' directory), and launch Dogme directly from github using the following command: 
 

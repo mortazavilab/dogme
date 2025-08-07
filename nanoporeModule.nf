@@ -1,5 +1,11 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
+
+
+// Use Nextflow's 'include' to alias openChromatinTask for bg and bed
+include { openChromatinTask as openChromatinTaskBg } from './modkitModule'
+include { openChromatinTask as openChromatinTaskBed } from './modkitModule'
+
 process softwareVTask {
     input:
     val version
@@ -110,6 +116,28 @@ process minimapTask {
     && samtools index -@ 64 ${params.sample}.${genomeName}.bam
     """
 }
+
+process getChrListTask {
+    tag "${genomeName}"
+
+    input:
+    tuple path(mapped_bam), path(mapped_bai), val(genomeName)
+
+    output:
+    tuple path(chr_sizes_file), path(mapped_bam), path(mapped_bai), val(genomeName)
+
+    publishDir path: "${params.topDir}/stats", pattern: "${chr_sizes_file}", mode: 'copy'
+
+    script:
+    chr_sizes_file = "${params.sample}.${genomeName}.chr_sizes.txt"
+    """
+     . ${params.scriptEnv}   
+    # Use cut -f 1,2 to get chromosome name and size (length)
+    # Filter out unmapped reads (*) and alternative contigs
+    samtools idxstats ${mapped_bam} | cut -f 1,2 | grep -v '*' > "${chr_sizes_file}"
+    """
+}
+
 
 //splitbam files into plus and minus strands for direct rna
 process separateStrandsTask {
@@ -267,7 +295,100 @@ process generateReport {
     """
 }
 
-workflow modWorkflow {
+process consolidateOpenChromatinBedTask {
+    tag "${params.sample}.${genomeName}"
+    input:
+    tuple val(genomeName), path(bed_files)
+    output:
+    path "${params.sample}.${genomeName}.open_chromatin.bed"
+    publishDir "${params.topDir}/open_chromatin", mode: 'copy'
+    script:
+    """
+    cat \$(ls ${bed_files} | sort) > ${params.sample}.${genomeName}.open_chromatin.bed
+    """
+}
+
+process consolidateOpenChromatinBgTask {
+    tag "${params.sample}.${genomeName}"
+    input:
+    tuple val(genomeName), path(bg_files)
+    output:
+    path "${params.sample}.${genomeName}.open_chromatin.bg"
+    publishDir "${params.topDir}/open_chromatin", mode: 'copy'
+    script:
+    """
+    cat \$(ls ${bg_files} | sort) > ${params.sample}.${genomeName}.open_chromatin.bg
+    """
+}
+
+
+workflow modificationWorkflow {
+    take:
+    mapped_bams_ch // Channel containing tuples: [path(bam), path(bai), val(genomeName)]
+    model_name     // The 'theModel' variable, needed for the open chromatin check
+
+    main:
+    if (params.readType == 'RNA') {
+        mappedBamsTuplesRNA = mapped_bams_ch.map { it -> tuple(*it) }
+        mappedBamsForStrands = mappedBamsTuplesRNA.map { bam, bai, genomeName -> tuple(bam, genomeName) }
+        strands = separateStrandsTask(mappedBamsForStrands)
+        plusStrand = strands.plus_strand
+        minusStrand = strands.minus_strand
+        combinedStrand = plusStrand.concat(minusStrand)
+        bedfiles = modkitTask(combinedStrand)
+    } else if (params.readType == 'DNA') {
+        mappedBamsTuplesDNA = mapped_bams_ch.map { it -> tuple(*it) }
+
+        if (model_name.contains('6mA')) {
+            chrListOutput = getChrListTask(mappedBamsTuplesDNA)
+            chrInfoForOpenChromatinBed = chrListOutput.flatMap { chr_sizes_file, bam_file, bai_file, genomeName ->
+                chr_sizes_file.readLines().collect { line ->
+                    def parts = line.split('\\t')
+                    tuple(parts[0], parts[1], bam_file, bai_file, genomeName, 'bed')
+                }
+            }
+            chrInfoForOpenChromatinBg = chrListOutput.flatMap { chr_sizes_file, bam_file, bai_file, genomeName ->
+                chr_sizes_file.readLines().collect { line ->
+                    def parts = line.split('\\t')
+                    tuple(parts[0], parts[1], bam_file, bai_file, genomeName, 'bg')
+                }
+            }
+            openChromatinResults_bg = openChromatinTaskBg(chrInfoForOpenChromatinBg)
+            openChromatinResults_bed = openChromatinTaskBed(chrInfoForOpenChromatinBed)
+
+            // Collect all per-chromosome bed files per genome and consolidate
+            openChromatinResults_bed
+                .map { bedfile -> 
+                    def genomeName = bedfile.getParent().getParent().getName()
+                    tuple(genomeName, bedfile)
+                }
+                .groupTuple()
+                .set { perGenomeBedFiles }
+
+            consolidatedBeds = consolidateOpenChromatinBedTask(perGenomeBedFiles)
+
+            // Collect all per-chromosome bg files per genome and consolidate
+            openChromatinResults_bg
+                .map { bgfile ->
+                    def genomeName = bgfile.getParent().getParent().getName()
+                    tuple(genomeName, bgfile)
+                }
+                .groupTuple()
+                .set { perGenomeBgFiles }
+
+            consolidatedBgs = consolidateOpenChromatinBgTask(perGenomeBgFiles)
+        }
+
+        mappedBamsForModkit = mappedBamsTuplesDNA.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
+        bedfiles = modkitTask(mappedBamsForModkit)
+    }
+
+    filterbeds = filterbedTask(bedfiles)
+    splitResults = splitModificationTask(filterbeds)
+    generateReport(launchDir, splitResults)
+}
+
+workflow mainWorkflow {
     take:
     theVersion
     theModel 
@@ -294,28 +415,12 @@ workflow modWorkflow {
     }
     mappedBams = minimapTask(unmappedBams)
 
-    if (params.readType == 'RNA') {
-        mappedBamsTuplesRNA = mappedBams.map { it -> tuple(*it) }
-        mappedBamsForStrands = mappedBamsTuplesRNA.map { bam, bai, genomeName -> tuple(bam, genomeName) }
-        strands = separateStrandsTask(mappedBamsForStrands)
-        plusStrand = strands.plus_strand
-        minusStrand = strands.minus_strand
-        combinedStrand = plusStrand.concat(minusStrand)
-        bedfiles = modkitTask(combinedStrand)
-    } else if (params.readType == 'DNA') {
-        mappedBamsTuplesDNA = mappedBams.map { it -> tuple(*it) }
-        mappedBamsForModkit = mappedBamsTuplesDNA.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
-        bedfiles = modkitTask(mappedBamsForModkit)
-    }
-
     if (params.readType == 'RNA' || params.readType == 'DNA') {
-        filterbeds = filterbedTask(bedfiles)
-        splitResults = splitModificationTask(filterbeds)
-        generateReport(launchDir, splitResults)
+        modificationWorkflow(mappedBams, theModel)
     } else {
         splitResults = Channel.empty()
         generateReport(launchDir, splitResults)
-    }  
+    }
 }
 
 workflow remapWorkflow {
@@ -331,23 +436,9 @@ workflow remapWorkflow {
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
     mappedBams = minimapTask(unmappedBams)
-    if (params.readType == 'RNA') {
-        mappedBamsTuplesRNA = mappedBams.map { it -> tuple(*it) }
-        mappedBamsForStrands = mappedBamsTuplesRNA.map { bam, bai, genomeName -> tuple(bam, genomeName) }
-        strands = separateStrandsTask(mappedBamsForStrands)
-        plusStrand = strands.plus_strand
-        minusStrand = strands.minus_strand
-        combinedStrand = plusStrand.concat(minusStrand)
-        bedfiles = modkitTask(combinedStrand)
-    } else if (params.readType == 'DNA') {
-        mappedBamsTuplesDNA = mappedBams.map { it -> tuple(*it) }
-        mappedBamsForModkit = mappedBamsTuplesDNA.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
-        bedfiles = modkitTask(mappedBamsForModkit)
-    }
+
     if (params.readType == 'RNA' || params.readType == 'DNA') {
-        filterbeds = filterbedTask(bedfiles)
-        splitResults = splitModificationTask(filterbeds)
-        generateReport(launchDir, splitResults)
+        modificationWorkflow(mappedBams, theModel)
     } else {
         splitResults = Channel.empty()
         generateReport(launchDir, splitResults)

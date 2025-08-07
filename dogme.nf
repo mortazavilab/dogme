@@ -2,9 +2,10 @@
 
 nextflow.enable.dsl=2
 
-include { modWorkflow } from './nanoporeModule'
+include { mainWorkflow } from './nanoporeModule'
 include { reportsWorkflow } from './nanoporeModule'
 include { remapWorkflow } from './nanoporeModule'
+include { modificationWorkflow } from './nanoporeModule'
 
 def getParamOrDefault(param, defaultValue) {
     if (param == null || param == 'null' || param == 'undefined' || !param) {
@@ -15,7 +16,7 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
-def dogmeVersion = "1.1"
+def dogmeVersion = "1.2"
 def defaultModDir = "${launchDir}/doradoModels"
 
 workflow {
@@ -30,7 +31,7 @@ workflow {
     theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
     theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
 
-    results = modWorkflow(dogmeVersion, theModel, modDir)
+    results = mainWorkflow(dogmeVersion, theModel, modDir)
 }
 
 workflow remap {
@@ -48,6 +49,31 @@ workflow remap {
     results = remapWorkflow(dogmeVersion, theModel, modDir)
 }
 
+workflow modkit {
+    def modificationsMap = [
+        "RNA": 'inosine_m6A,pseU,m5C',
+        "DNA": '5mCG_5hmCG,6mA'
+    ]
+    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
+
+    // 1. Create a channel from all BAM files in the specified directory.
+    // 2. Filter out any containing "unmapped".
+    // 3. Filter to keep only those that have a corresponding .bai index file.
+    // 4. Map the results to the tuple format expected by analysisWorkflow.
+    mappedBams = Channel.fromPath("${params.bamDir}/*.bam")
+                         .filter { bam -> !bam.name.contains('unmapped') }
+                         .filter { bam -> file(bam.toString() + '.bai').exists() }
+                         .map { bam ->
+                             def bai = file(bam.toString() + '.bai')
+                             // Assumes the filename format is ${params.sample}.${genomeName}.bam
+                             // This line removes the sample prefix to extract the genome name.
+                             def genomeName = bam.baseName.replaceFirst("^${params.sample}\\.", "")
+                             return tuple(bam, bai, genomeName)
+                         }
+
+    modificationWorkflow(mappedBams, theModel)
+}
 
 workflow reports {
     reportsWorkflow(dogmeVersion, params.modDir)
