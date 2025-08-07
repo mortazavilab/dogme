@@ -317,7 +317,7 @@ process consolidateOpenChromatinBgTask {
     publishDir "${params.topDir}/open_chromatin", mode: 'copy'
     script:
     """
-    cat \$(ls ${bg_files} | sort) > ${params.sample}.${genomeName}.open_chromatin.bg
+    cat \$(ls ${bg_files} | sort) | sort -k1,1 -k2,2n > ${params.sample}.${genomeName}.open_chromatin.bg
     """
 }
 
