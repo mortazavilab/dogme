@@ -3,6 +3,9 @@
 nextflow.enable.dsl=2
 
 process openChromatinTask {
+    errorStrategy 'retry'
+    maxRetries 5
+    maxErrors -1
     tag "${genomeName} ${chromosome} ${outputType}"
 
     input:
@@ -11,7 +14,7 @@ process openChromatinTask {
     output:
     path "${genomeName}/${chromosome}/${chromosome}*"
 
-    publishDir "${params.topDir}/open_chromatin", mode: 'copy'
+    publishDir "${params.topDir}/openChromatin", mode: 'copy'
 
     script:
     """
