@@ -15,7 +15,7 @@ def compute_md5(file_path):
 
 def collect_file_info(directory, extensions):
     file_data = []
-    for subfolder, ext in [("bams", ".bam"), ("bedMethyl", ".bed")]:
+    for subfolder, ext in [("bams", ".bam"), ("bedMethyl", ".bed"), ("openChromatin", ".bed")]:
         target_dir = Path(directory) / subfolder
         if not target_dir.exists():
             continue

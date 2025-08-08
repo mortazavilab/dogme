@@ -286,6 +286,7 @@ process generateReport {
     input:
     path report_inputs
     path results
+    path openBeds
     output:
     path "report.tsv", emit: report
     publishDir params.topDir, mode: 'copy'
@@ -353,11 +354,11 @@ workflow modificationWorkflow {
                     tuple(parts[0], parts[1], bam_file, bai_file, genomeName, 'bg')
                 }
             }
-            openChromatinResults_bg = openChromatinTaskBg(chrInfoForOpenChromatinBg)
-            openChromatinResults_bed = openChromatinTaskBed(chrInfoForOpenChromatinBed)
+            openChromatinResultsBg = openChromatinTaskBg(chrInfoForOpenChromatinBg)
+            openChromatinResultsBed = openChromatinTaskBed(chrInfoForOpenChromatinBed)
 
             // Collect all per-chromosome bed files per genome and consolidate
-            openChromatinResults_bed
+            openChromatinResultsBed
                 .map { bedfile -> 
                     def genomeName = bedfile.getParent().getParent().getName()
                     tuple(genomeName, bedfile)
@@ -368,7 +369,7 @@ workflow modificationWorkflow {
             consolidatedBeds = consolidateOpenChromatinBedTask(perGenomeBedFiles)
 
             // Collect all per-chromosome bg files per genome and consolidate
-            openChromatinResults_bg
+            openChromatinResultsBg
                 .map { bgfile ->
                     def genomeName = bgfile.getParent().getParent().getName()
                     tuple(genomeName, bgfile)
@@ -385,7 +386,15 @@ workflow modificationWorkflow {
 
     filterbeds = filterbedTask(bedfiles)
     splitResults = splitModificationTask(filterbeds)
-    generateReport(launchDir, splitResults)
+    splitResultsReport = splitResults.last()
+    
+    if (model_name.contains('6mA')) {
+        consolidatedBedReport = consolidatedBeds.last()
+    } else {
+        consolidatedBedReport = Channel.empty()
+    }
+
+    generateReport(launchDir, splitResultsReport, consolidatedBedReport)
 }
 
 workflow mainWorkflow {
@@ -418,8 +427,9 @@ workflow mainWorkflow {
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         modificationWorkflow(mappedBams, theModel)
     } else {
-        splitResults = Channel.empty()
-        generateReport(launchDir, splitResults)
+        placeholder1 = Channel.empty()
+        placeholder2 = Channel.empty()
+        generateReport(launchDir, placeholder1, placeholder2)
     }
 }
 
@@ -440,8 +450,9 @@ workflow remapWorkflow {
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         modificationWorkflow(mappedBams, theModel)
     } else {
-        splitResults = Channel.empty()
-        generateReport(launchDir, splitResults)
+        placeholder1 = Channel.empty()
+        placeholder2 = Channel.empty()
+        generateReport(launchDir, placeholder1, placeholder2)
     }
 }
 
@@ -451,10 +462,9 @@ workflow reportsWorkflow {
     modelDirectory
     
     main:
-    // Run softwareVTask without downloading models
     softwareVTask(theVersion, modelDirectory)
     
-    // Generate report using existing results
-    existingResults = Channel.fromPath("${params.bedDir}/*.filtered.*")
-    generateReport(launchDir, existingResults)
+    placeholder1 = Channel.empty()
+    placeholder2 = Channel.empty()
+    generateReport(launchDir, placeholder1, placeholder2)
 }
