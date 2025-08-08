@@ -19,7 +19,7 @@ def collect_file_info(directory, extensions):
         target_dir = Path(directory) / subfolder
         if not target_dir.exists():
             continue
-        for filepath in target_dir.rglob(f'*{ext}'):
+        for filepath in target_dir.glob(f'*{ext}'):
             size_bytes = filepath.stat().st_size
             file_data.append({
                 'filename': filepath.name,
