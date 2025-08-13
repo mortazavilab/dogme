@@ -421,7 +421,7 @@ workflow modificationWorkflow {
     if (model_name.contains('6mA')) {
         consolidatedBedReport = consolidatedBeds.last()
     } else {
-        consolidatedBedReport = Channel.of(param.tmpDir)
+        consolidatedBedReport = Channel.of(params.tmpDir)
     }
 
     generateReport(params.topDir, splitResultsReport, consolidatedBedReport)
@@ -458,8 +458,8 @@ workflow mainWorkflow {
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         modificationWorkflow(mappedBams, theModel)
     } else {
-        placeholder1 = Channel.of(param.tmpDir)
-        placeholder2 = Channel.of(param.tmpDir)
+        placeholder1 = Channel.of(params.tmpDir)
+        placeholder2 = Channel.of(params.tmpDir)
         generateReport(params.topDir, placeholder1, placeholder2)
     }
 }
@@ -482,7 +482,7 @@ workflow remapWorkflow {
         modificationWorkflow(mappedBams, theModel)
     } else {
         placeholder1 = Channel.of(params.bamDir)
-        placeholder2 = Channel.of(param.tmpDir)
+        placeholder2 = Channel.of(params.tmpDir)
         generateReport(params.topDir, placeholder1, placeholder2)
     }
 
@@ -501,7 +501,7 @@ workflow reportsWorkflow {
     softwareVTask(theVersion, modelDirectory)
     
     placeholder1 = Channel.of(params.bamDir)
-    placeholder2 = Channel.of(param.tmpDir)
+    placeholder2 = Channel.of(params.tmpDir)
     generateReport(params.topDir, placeholder1, placeholder2)
 }
 
