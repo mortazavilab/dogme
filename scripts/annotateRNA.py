@@ -1,34 +1,57 @@
-#!/usr/bin/env python3
+#!/usr/bin/env python
+# -*- coding: utf-8 -*-
 
-import pysam
+"""
+Long-Read RNA-Seq BAM Annotation Script
+
+This script annotates long-read RNA-sequencing alignments in a BAM file
+based on a provided GTF/GFF3 gene annotation. It classifies each read into
+novelty categories (Known, ISM, NIC, NNC, Antisense, Intergenic) based on
+its splice junction compatibility with the known annotation.
+
+The script is optimized for performance using multiprocessing and produces
+an annotated BAM file with custom tags. It also includes an optional mode
+to generate output files compatible with the TALON toolkit.
+"""
+
 import argparse
-from intervaltree import Interval, IntervalTree
-from collections import defaultdict
 import sys
-import os
 import time
+import re
+import os
+import subprocess
+from collections import defaultdict, Counter
+from multiprocessing import Pool, Manager
+from multiprocessing.managers import SyncManager
+import pysam
 
-def parse_gtf_to_annotations(gtf_file_path: str):
+__version__ = "1.0.30"
+__author__ = "Elnaz A., Gemini, Claude"
+
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Logging ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def log_message(message, level="INFO"):
+    """Prints a formatted log message to stderr."""
+    timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+    sys.stderr.write(f"[{timestamp}][{level}] {message}\n")
+    sys.stderr.flush()
+
+# ~~~~~~~~~~~~~~~~~~~~~~ GTF/GFF3 Parsing ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def parse_gtf(gtf_file):
     """
-    Parses a GTF file to build data structures for genes and transcripts.
-
-    Args:
-        gtf_file_path: Path to the GTF annotation file.
-
-    Returns:
-        A tuple containing two dictionaries:
-        - gene_annotations: Info about each gene, including its exons.
-          {gene_id: {'chrom': str, 'strand': str, 'exons': set((start, end), ...)}}
-        - transcript_annotations: Info about each transcript's exact exon structure.
-          {transcript_id: {'gene_id': str, 'chrom': str, 'strand': str,
-                           'exons': tuple(sorted((start, end), ...))}}
+    Parses a GTF/GFF3 file and builds annotation data structures.
     """
-    print(f"[{time.ctime()}] Parsing GTF file: {gtf_file_path}...")
-    gene_annotations = defaultdict(lambda: {'exons': set(), 'chrom': None, 'strand': None})
-    transcript_annotations = defaultdict(lambda: {'exons': set(), 'gene_id': None, 'chrom': None, 'strand': None})
+    log_message(f"Parsing annotation file: {gtf_file}")
+    genes = defaultdict(dict)
+    all_donors = defaultdict(lambda: defaultdict(set))
+    all_acceptors = defaultdict(lambda: defaultdict(set))
+    gene_id_to_name = {}
+    
+    gene_id_re = re.compile(r'gene_id[ =]"?([^";]+)"?')
+    transcript_id_re = re.compile(r'transcript_id[ =]"?([^";]+)"?')
+    gene_name_re = re.compile(r'gene_name[ =]"?([^";]+)"?')
 
-    with open(gtf_file_path, 'r') as gtf:
-        for line in gtf:
+    with open(gtf_file, 'r') as f:
+        for line in f:
             if line.startswith('#'):
                 continue
             
@@ -37,259 +60,467 @@ def parse_gtf_to_annotations(gtf_file_path: str):
                 continue
 
             feature_type = fields[2]
-            if feature_type != 'exon':
+            if feature_type not in ('exon', 'transcript', 'gene'):
                 continue
 
-            chrom = fields[0]
-            # GTF is 1-based, inclusive. Convert to 0-based, half-open for intervaltree/pysam.
-            start = int(fields[3]) - 1
-            end = int(fields[4])
-            strand = fields[6]
-            attributes = dict(item.strip().split(' ', 1) for item in fields[8].replace('"', '').split(';') if item)
+            chrom, start, end, strand = fields[0], int(fields[3]), int(fields[4]), fields[6]
+            attributes = fields[8]
 
-            gene_id = attributes.get('gene_id')
-            transcript_id = attributes.get('transcript_id')
+            gene_id_match = gene_id_re.search(attributes)
+            transcript_id_match = transcript_id_re.search(attributes)
+            gene_name_match = gene_name_re.search(attributes)
 
-            if not gene_id or not transcript_id:
+            if not gene_id_match:
                 continue
-
-            # Populate gene-level information
-            gene_annotations[gene_id]['exons'].add((start, end))
-            if not gene_annotations[gene_id]['chrom']:
-                gene_annotations[gene_id]['chrom'] = chrom
-                gene_annotations[gene_id]['strand'] = strand
-
-            # Populate transcript-level information
-            transcript_annotations[transcript_id]['exons'].add((start, end))
-            if not transcript_annotations[transcript_id]['gene_id']:
-                transcript_annotations[transcript_id]['gene_id'] = gene_id
-                transcript_annotations[transcript_id]['chrom'] = chrom
-                transcript_annotations[transcript_id]['strand'] = strand
-
-    # Finalize transcript annotations by converting exon sets to sorted, hashable tuples
-    final_transcript_annotations = {}
-    for tx_id, data in transcript_annotations.items():
-        final_transcript_annotations[tx_id] = {
-            'gene_id': data['gene_id'],
-            'chrom': data['chrom'],
-            'strand': data['strand'],
-            'exons': tuple(sorted(list(data['exons'])))
-        }
-        
-    print(f"[{time.ctime()}] Parsed {len(gene_annotations)} genes and {len(final_transcript_annotations)} transcripts.")
-    return dict(gene_annotations), final_transcript_annotations
-
-
-def build_gene_interval_trees(gene_annotations: dict):
-    """
-    Builds interval trees for gene loci from parsed GTF data.
-
-    Args:
-        gene_annotations: The gene annotation dictionary from parse_gtf_to_annotations.
-
-    Returns:
-        A dictionary mapping chromosome names to IntervalTree objects.
-        {chrom: IntervalTree([Interval(locus_start, locus_end, gene_id), ...])}
-    """
-    print(f"[{time.ctime()}] Building gene interval trees...")
-    gene_interval_trees = defaultdict(IntervalTree)
-    for gene_id, data in gene_annotations.items():
-        if not data['exons']:
-            continue
-        
-        # Define the gene locus as the min/max coordinates of all its exons
-        locus_start = min(e[0] for e in data['exons'])
-        locus_end = max(e[1] for e in data['exons'])
-        chrom = data['chrom']
-        
-        gene_interval_trees[chrom].add(Interval(locus_start, locus_end, gene_id))
-    
-    print(f"[{time.ctime()}] Interval trees built for {len(gene_interval_trees)} chromosomes.")
-    return gene_interval_trees
-
-def get_read_strand(read: pysam.AlignedSegment) -> str:
-    """Returns the strand of a read as '+' or '-'."""
-    return '-' if read.is_reverse else '+'
-
-def calculate_exonic_overlap(read_blocks: list, gene_exons: set) -> int:
-    """
-    Calculates the total length of overlap between a read's exons and a gene's exons.
-
-    Args:
-        read_blocks: A list of (start, end) tuples for the read's exons from get_blocks().
-        gene_exons: A set of (start, end) tuples for the gene's exons.
-
-    Returns:
-        The total number of overlapping base pairs.
-    """
-    total_overlap = 0
-    for r_start, r_end in read_blocks:
-        for g_start, g_end in gene_exons:
-            # Calculate overlap for each pair of exons
-            overlap_start = max(r_start, g_start)
-            overlap_end = min(r_end, g_end)
-            overlap = max(0, overlap_end - overlap_start)
-            total_overlap += overlap
-    return total_overlap
-
-
-def main():
-    """Main execution function."""
-    parser = argparse.ArgumentParser(
-        description="Annotate a long-read RNA-seq BAM file with gene (gx) and transcript (tx) tags."
-    )
-    parser.add_argument("--bam", required=True, help="Input BAM file, sorted by coordinate.")
-    parser.add_argument("--gtf", required=True, help="Input GTF annotation file.")
-    parser.add_argument("--output", required=True, help="Output BAM file path.")
-    args = parser.parse_args()
-
-    # --- 1. Load and process annotations ---
-    gene_annotations, transcript_annotations = parse_gtf_to_annotations(args.gtf)
-    gene_interval_trees = build_gene_interval_trees(gene_annotations)
-    
-    # Create a reverse map from gene_id to a list of its transcript_ids
-    gene_to_transcripts = defaultdict(list)
-    for tx_id, data in transcript_annotations.items():
-        gene_to_transcripts[data['gene_id']].append(tx_id)
-
-    # --- 2. Setup for BAM processing ---
-    print(f"[{time.ctime()}] Starting BAM file processing...")
-    try:
-        infile = pysam.AlignmentFile(args.bam, "rb")
-        header = infile.header.copy()
-        outfile = pysam.AlignmentFile(args.output, "wb", header=header)
-    except FileNotFoundError:
-        print(f"Error: Input BAM file not found at {args.bam}", file=sys.stderr)
-        sys.exit(1)
-    except ValueError as e:
-        print(f"Error opening BAM file {args.bam}. Is it a valid BAM file? Is the index missing?", file=sys.stderr)
-        print(f"Pysam error: {e}", file=sys.stderr)
-        sys.exit(1)
-
-
-    # --- 3. Initialize counters and structures for novelty ---
-    novel_gene_counter = 1
-    novel_transcript_counter = 1
-    # This tree tracks the genomic loci of newly discovered multi-exon novel genes
-    novel_gene_loci = defaultdict(IntervalTree)
-
-    # --- 4. Process each read in the BAM file ---
-    read_count = 0
-    annotated_count = 0
-    for read in infile:
-        read_count += 1
-        if read_count % 100000 == 0:
-            print(f"[{time.ctime()}] Processed {read_count} reads...")
-
-        # Skip unmapped reads or secondary alignments
-        if read.is_unmapped or read.is_secondary or read.is_supplementary:
-            outfile.write(read)
-            continue
-
-        read_chrom = read.reference_name
-        read_start = read.reference_start
-        read_end = read.reference_end
-        read_strand = get_read_strand(read)
-        
-        # get_blocks() gives the exon structure for spliced reads
-        read_blocks = read.get_blocks()
-        
-        # --- Find candidate gene overlaps using the interval tree ---
-        candidate_genes = gene_interval_trees[read_chrom].overlap(read_start, read_end)
-        
-        # Filter candidates by strand
-        stranded_candidates = {
-            interval.data for interval in candidate_genes 
-            if gene_annotations[interval.data]['strand'] == read_strand
-        }
-
-        best_gene_id = None
-        assigned_tx_id = None
-
-        if not stranded_candidates:
-            # --- NOVEL GENE LOGIC ---
-            # This read doesn't overlap any known gene on the same strand.
-            # Check if it overlaps a previously defined novel gene locus.
-            novel_locus_overlap = novel_gene_loci[read_chrom].overlap(read_start, read_end)
             
-            overlapping_novel_genes = {
-                interval.data for interval in novel_locus_overlap
-                if interval.data[1] == read_strand # data is (novel_id, strand)
-            }
+            gene_id = gene_id_match.group(1).split('.')[0]
+            if gene_name_match:
+                gene_id_to_name[gene_id] = gene_name_match.group(1)
 
-            if overlapping_novel_genes:
-                # Assign to the first overlapping novel gene found
-                best_gene_id = overlapping_novel_genes.pop()[0]
-            else:
-                # This is a new novel gene locus
-                best_gene_id = f"NOVELG{novel_gene_counter:04d}"
-                novel_gene_counter += 1
-                # Store the novel gene with its strand
-                novel_gene_loci[read_chrom].add(Interval(read_start, read_end, (best_gene_id, read_strand)))
+            if gene_id not in genes[chrom]:
+                genes[chrom][gene_id] = {
+                    'strand': strand,
+                    'start': float('inf'),
+                    'end': float('-inf'),
+                    'transcripts': defaultdict(lambda: {'exons': []}),
+                    'donors': set(),
+                    'acceptors': set()
+                }
             
-            # Every novel gene read also gets a novel transcript ID
-            assigned_tx_id = f"NOVELT{novel_transcript_counter:012d}"
-            novel_transcript_counter += 1
+            genes[chrom][gene_id]['start'] = min(genes[chrom][gene_id]['start'], start)
+            genes[chrom][gene_id]['end'] = max(genes[chrom][gene_id]['end'], end)
 
+            if feature_type == 'exon' and transcript_id_match:
+                transcript_id = transcript_id_match.group(1).split('.')[0]
+                genes[chrom][gene_id]['transcripts'][transcript_id]['exons'].append((start, end))
+
+    for chrom in genes:
+        for gene_id in genes[chrom]:
+            gene = genes[chrom][gene_id]
+            strand = gene['strand']
+            for transcript_id in gene['transcripts']:
+                gene['transcripts'][transcript_id]['exons'].sort()
+                exons = gene['transcripts'][transcript_id]['exons']
+                
+                for i in range(len(exons) - 1):
+                    intron_start, intron_end = exons[i][1], exons[i+1][0]
+                    if strand == '+':
+                        all_donors[chrom][strand].add(intron_start)
+                        all_acceptors[chrom][strand].add(intron_end)
+                        gene['donors'].add(intron_start)
+                        gene['acceptors'].add(intron_end)
+                    else:
+                        all_donors[chrom][strand].add(intron_end)
+                        all_acceptors[chrom][strand].add(intron_start)
+                        gene['donors'].add(intron_end)
+                        gene['acceptors'].add(intron_start)
+
+    log_message("Finished parsing annotation.")
+    return genes, all_donors, all_acceptors, gene_id_to_name
+
+# ~~~~~~~~~~~~~~~~~~~~~~ Core Annotation Logic ~~~~~~~~~~~~~~~~~~~~~~~~~~
+def get_read_splice_junctions(read, min_intron_len=10):
+    """
+    Extracts splice junctions from a BAM alignment record.
+    
+    *** BUG FIX: This function now correctly calculates 1-based, inclusive junction
+    coordinates from pysam's 0-based, half-open block coordinates. ***
+    """
+    junctions = []
+    blocks = read.get_blocks() # List of [start, end) pairs in ref coords, 0-based
+    if len(blocks) < 2:
+        return []
+
+    for i in range(len(blocks) - 1):
+        # Donor is the end of the current block (0-based, exclusive).
+        # This is equivalent to the 1-based, inclusive end coordinate of the exon.
+        donor = blocks[i][1]
+        
+        # Acceptor is the start of the next block (0-based, inclusive).
+        # We add 1 to convert to a 1-based, inclusive coordinate for GTF comparison.
+        acceptor = blocks[i+1][0] + 1
+        
+        # Calculate intron length using 0-based coordinates for accuracy
+        intron_length = blocks[i+1][0] - blocks[i][1]
+        
+        if intron_length >= min_intron_len:
+            junctions.append((donor, acceptor))
+            
+    return junctions
+
+def classify_read(read, annotation, min_intron_len, debug_gene=None, debug_list=None):
+    """
+    Classifies a single read based on its splice junctions against the annotation.
+    """
+    if read.is_unmapped or read.is_secondary or read.is_supplementary:
+        return None
+
+    genes, all_donors, all_acceptors = annotation
+    read_chrom = read.reference_name
+    read_start = read.reference_start + 1
+    read_end = read.reference_end
+    read_strand = '-' if read.is_reverse else '+'
+    read_junctions = get_read_splice_junctions(read, min_intron_len)
+    
+    overlapping_genes_same_strand = []
+    overlapping_genes_opp_strand = []
+
+    if read_chrom in genes:
+        for gene_id, gene_data in genes[read_chrom].items():
+            if read_start < gene_data['end'] and read_end > gene_data['start']:
+                if gene_data['strand'] == read_strand:
+                    overlapping_genes_same_strand.append((gene_id, gene_data))
+                else:
+                    overlapping_genes_opp_strand.append((gene_id, gene_data))
+
+    result = None
+    if overlapping_genes_same_strand:
+        read_junctions_canonical = {tuple(sorted(j)) for j in read_junctions}
+        
+        potential_matches = []
+        for gene_id, gene_data in overlapping_genes_same_strand:
+            for transcript_id, trans_data in gene_data['transcripts'].items():
+                known_exons = trans_data['exons']
+                known_junctions_canonical = {tuple(sorted((known_exons[i][1], known_exons[i+1][0]))) for i in range(len(known_exons) - 1)}
+                
+                if read_junctions_canonical.issubset(known_junctions_canonical):
+                    is_full_match = (read_junctions_canonical == known_junctions_canonical)
+                    potential_matches.append({"is_full_match": is_full_match, "gene_id": gene_id, "transcript_id": transcript_id})
+
+        if potential_matches:
+            best_match = sorted(potential_matches, key=lambda x: x['is_full_match'], reverse=True)[0]
+            final_gene_id, final_transcript_id = best_match['gene_id'], best_match['transcript_id']
+            classification = "Known" if best_match['is_full_match'] else "ISM"
+            result = (classification, final_gene_id, final_transcript_id)
         else:
-            # --- KNOWN GENE AND TRANSCRIPT LOGIC ---
-            # This read overlaps at least one known gene.
-            
-            # AMBIGUITY RESOLUTION: Find the gene with the greatest exonic overlap.
-            max_overlap = -1
-            
-            for gene_id in stranded_candidates:
-                overlap = calculate_exonic_overlap(read_blocks, gene_annotations[gene_id]['exons'])
-                if overlap > max_overlap:
-                    max_overlap = overlap
-                    best_gene_id = gene_id
+            best_gene_id = None
+            max_score = -1
+            if read_junctions:
+                for gene_id, gene_data in overlapping_genes_same_strand:
+                    score = 0
+                    gene_donors = gene_data.get('donors', set())
+                    gene_acceptors = gene_data.get('acceptors', set())
+                    for junc_coord1, junc_coord2 in read_junctions:
+                        if read_strand == '+':
+                            if junc_coord1 in gene_donors: score += 1
+                            if junc_coord2 in gene_acceptors: score += 1
+                        else:
+                            if junc_coord2 in gene_donors: score += 1
+                            if junc_coord1 in gene_acceptors: score += 1
+                    if score > max_score:
+                        max_score = score
+                        best_gene_id = gene_id
             
             if best_gene_id is None:
-                # This can happen if the read overlaps the intron of a single-exon gene
-                # but has no exonic overlap. Treat as novel.
-                # This logic path is rare but necessary for correctness.
-                best_gene_id = f"NOVELG{novel_gene_counter:04d}"
-                novel_gene_counter += 1
-                assigned_tx_id = f"NOVELT{novel_transcript_counter:012d}"
-                novel_transcript_counter += 1
+                best_gene_id = overlapping_genes_same_strand[0][0]
+
+            gene_id = best_gene_id
+            if not read_junctions:
+                classification = "NIC"
             else:
-                # We have a best gene. Now check for a perfect transcript match.
-                read_exon_tuple = tuple(sorted(read_blocks))
-                
-                found_match = False
-                for tx_id in gene_to_transcripts.get(best_gene_id, []):
-                    if transcript_annotations[tx_id]['exons'] == read_exon_tuple:
-                        assigned_tx_id = tx_id
-                        found_match = True
-                        break
-                
-                if not found_match:
-                    # NOVEL TRANSCRIPT, KNOWN GENE
-                    assigned_tx_id = f"NOVELT{novel_transcript_counter:012d}"
-                    novel_transcript_counter += 1
+                is_nic = True
+                strand_donors = all_donors.get(read_chrom, {}).get(read_strand, set())
+                strand_acceptors = all_acceptors.get(read_chrom, {}).get(read_strand, set())
+                for junc_coord1, junc_coord2 in read_junctions:
+                    if read_strand == '+':
+                        if not (junc_coord1 in strand_donors and junc_coord2 in strand_acceptors):
+                            is_nic = False
+                            break
+                    else:
+                        if not (junc_coord2 in strand_donors and junc_coord1 in strand_acceptors):
+                            is_nic = False
+                            break
+                classification = "NIC" if is_nic else "NNC"
+            result = (classification, gene_id, "NOVEL")
 
-        # --- Set tags and write the read to the output file ---
-        if best_gene_id and assigned_tx_id:
-            read.set_tag('gx', best_gene_id, 'Z')
-            read.set_tag('tx', assigned_tx_id, 'Z')
-            annotated_count += 1
+    elif overlapping_genes_opp_strand:
+        gene_id = overlapping_genes_opp_strand[0][0]
+        result = ("Antisense", gene_id, "ANTISENSE")
+    else:
+        result = ("Intergenic", "NOVELG", "NOVELT")
+
+    classification, final_gene_id, final_transcript_id = result
+    
+    if debug_gene and debug_list is not None and (final_gene_id == debug_gene or (debug_gene in [g[0] for g in overlapping_genes_same_strand])):
+        debug_line = f"Read:{read.query_name}\tJunctions:{read_junctions}\t->\tClass:{classification}\tGene:{final_gene_id}\tTranscript:{final_transcript_id}"
+        debug_list.append(debug_line)
+
+    read.set_tag("TT", classification)
+    read.set_tag("GX", final_gene_id)
+    read.set_tag("TX", final_transcript_id)
+    return classification, final_gene_id, final_transcript_id, read
+
+# ~~~~~~~~~~~~~~~~~~~~~~ Parallel Processing & I/O ~~~~~~~~~~~~~~~~~~~~~~
+def worker_init(annotation_data, header_dict, min_len, debug_gene_id=None, debug_novel_type=None, debug_gene_list=None, debug_novel_list=None):
+    global worker_annotation, worker_header, worker_min_intron_len, worker_debug_gene, worker_debug_novel_type, worker_debug_gene_list, worker_debug_novel_list
+    worker_annotation = annotation_data
+    worker_header = pysam.AlignmentHeader.from_dict(header_dict)
+    worker_min_intron_len = min_len
+    worker_debug_gene = debug_gene_id
+    worker_debug_novel_type = debug_novel_type
+    worker_debug_gene_list = debug_gene_list
+    worker_debug_novel_list = debug_novel_list
+
+def process_chunk(read_strings):
+    results = []
+    for read_string in read_strings:
+        read = pysam.AlignedSegment.fromstring(read_string, worker_header)
+        result = classify_read(read, worker_annotation, worker_min_intron_len, worker_debug_gene, worker_debug_gene_list)
+        if result and result[0] != "Genomic":
+            classification, gene_id, transcript_id, annotated_read = result
+            results.append((classification, gene_id, transcript_id, annotated_read.to_string()))
+            
+            if worker_debug_novel_type and classification == worker_debug_novel_type:
+                junctions = get_read_splice_junctions(read, worker_min_intron_len)
+                debug_line = f"Read:{read.query_name}\tGene:{gene_id}\tTranscript:{transcript_id}\tJunctions:{junctions}"
+                worker_debug_novel_list.append(debug_line)
+
+    return results
+
+def read_bam_in_chunks(bam_file, chunk_size, max_reads=None, region=None):
+    read_iterator = bam_file.fetch(**region) if region else bam_file.fetch(until_eof=True)
+    read_chunk = []
+    reads_yielded = 0
+    for read in read_iterator:
+        if max_reads is not None and reads_yielded >= max_reads:
+            break
+        read_chunk.append(read.to_string())
+        reads_yielded += 1
+        if len(read_chunk) >= chunk_size:
+            yield read_chunk
+            read_chunk = []
+    if read_chunk:
+        yield read_chunk
+
+# ~~~~~~~~~~~~~~~~~~~~~~ Output Generation ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def generate_qc_report(abundance_counter, gene_id_to_name, qc_filename):
+    log_message(f"Generating QC report: {qc_filename}")
+    gene_qc_data = defaultdict(lambda: defaultdict(lambda: {'models': set(), 'reads': 0}))
+    
+    for (gene_id, transcript_id, classification), count in abundance_counter.items():
+        if count > 0:
+            gene_qc_data[gene_id][classification]['models'].add(transcript_id)
+            gene_qc_data[gene_id][classification]['reads'] += count
+    
+    with open(qc_filename, 'w') as f:
+        header = [
+            "gene_id", "gene_name", "known_models", "known_reads", "ism_models", "ism_reads",
+            "nic_models", "nic_reads", "nnc_models", "nnc_reads", "antisense_models", "antisense_reads",
+            "intergenic_models", "intergenic_reads"
+        ]
+        f.write(",".join(header) + "\n")
         
-        outfile.write(read)
+        for gene_id in sorted(gene_qc_data.keys()):
+            gene_name = gene_id_to_name.get(gene_id, 'NovelGene')
+            
+            def get_counts(classification):
+                data = gene_qc_data[gene_id].get(classification, {})
+                return len(data.get('models', set())), data.get('reads', 0)
 
-    # --- 5. Clean up and finalize ---
-    print(f"[{time.ctime()}] Finished processing {read_count} reads.")
-    print(f"[{time.ctime()}] Annotated {annotated_count} reads with gx/tx tags.")
-    infile.close()
-    outfile.close()
+            known_models, known_reads = get_counts('Known')
+            ism_models, ism_reads = get_counts('ISM')
+            nic_models, nic_reads = get_counts('NIC')
+            nnc_models, nnc_reads = get_counts('NNC')
+            antisense_models, antisense_reads = get_counts('Antisense')
+            intergenic_models, intergenic_reads = get_counts('Intergenic')
+            
+            f.write(f"{gene_id},{gene_name},{known_models},{known_reads},{ism_models},{ism_reads},"
+                    f"{nic_models},{nic_reads},{nnc_models},{nnc_reads},{antisense_models},{antisense_reads},"
+                    f"{intergenic_models},{intergenic_reads}\n")
 
-    # --- 6. Sort and index the output BAM file for compatibility ---
-    print(f"[{time.ctime()}] Sorting and indexing output BAM file...")
-    temp_sorted_path = args.output + ".sorted"
-    pysam.sort("-o", temp_sorted_path, args.output)
-    os.rename(temp_sorted_path, args.output)
-    pysam.index(args.output)
-    print(f"[{time.ctime()}] Script finished. Output at: {args.output}")
+def sort_and_index_bam(unsorted_bam_path, sorted_bam_path):
+    log_message(f"Sorting BAM file: {unsorted_bam_path}")
+    try:
+        subprocess.run(['samtools', 'sort', '-@', '4', '-o', sorted_bam_path, unsorted_bam_path], check=True)
+        log_message(f"Indexing BAM file: {sorted_bam_path}")
+        subprocess.run(['samtools', 'index', sorted_bam_path], check=True)
+        os.remove(unsorted_bam_path)
+        log_message(f"Removed temporary unsorted file: {unsorted_bam_path}")
+    except FileNotFoundError:
+        log_message("ERROR: samtools not found. Please ensure it is installed and in your PATH.", level="ERROR")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        log_message(f"ERROR: samtools command failed: {e}", level="ERROR")
+        sys.exit(1)
 
+# ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Main Orchestrator ~~~~~~~~~~~~~~~~~~~~~~~~~~~
+def main():
+    parser = argparse.ArgumentParser(description="Annotate long-read RNA-seq BAM files.", formatter_class=argparse.RawTextHelpFormatter)
+    parser.add_argument("--bam", "-b", required=True, help="Input BAM file.")
+    parser.add_argument("--gtf", "-g", required=True, help="Gene annotation file.")
+    parser.add_argument("--out", "-o", required=True, help="Output file prefix.")
+    parser.add_argument("--threads", "-t", type=int, default=1, help="Number of threads.")
+    parser.add_argument("--talon", action="store_true", help="Generate TALON-compatible output.")
+    parser.add_argument("--chunk_size", type=int, default=5000, help="Reads per chunk.")
+    parser.add_argument("--num_reads", type=int, default=None, help="Process first N reads.")
+    parser.add_argument("--min_intron_len", type=int, default=10, help="Min intron length.")
+    parser.add_argument("--debug_gene", type=str, default=None, help="Debug a single gene ID, writing output to a file.")
+    parser.add_argument("--debug_novel_type", type=str, default=None, help="Output details for a specific novel class (e.g., NNC, NIC).")
+    args = parser.parse_args()
+
+    start_time = time.time()
+    
+    if args.debug_gene:
+        args.threads = 1
+        log_message(f"DEBUG MODE: Focusing on gene '{args.debug_gene}'. Forcing threads to 1.", level="DEBUG")
+
+    log_message(f"Starting annotation process with {args.threads} threads.")
+    if args.num_reads:
+        log_message(f"Processing only the first {args.num_reads:,} reads.")
+    log_message(f"Minimum intron length set to: {args.min_intron_len} bp.")
+
+    genes, all_donors, all_acceptors, gene_id_to_name = parse_gtf(args.gtf)
+
+    debug_region = None
+    debug_gene_info = None
+    if args.debug_gene:
+        found = False
+        for chrom, gene_dict in genes.items():
+            if args.debug_gene in gene_dict:
+                gene_info = gene_dict[args.debug_gene]
+                debug_gene_info = gene_info
+                debug_region = {'contig': chrom, 'start': gene_info['start'] - 1, 'end': gene_info['end']}
+                log_message(f"Found debug gene {args.debug_gene} at {chrom}:{gene_info['start']}-{gene_info['end']}", level="DEBUG")
+                found = True
+                break
+        if not found:
+            log_message(f"ERROR: Debug gene '{args.debug_gene}' not found in GTF.", level="ERROR")
+            sys.exit(1)
+
+    input_bam = pysam.AlignmentFile(args.bam, "rb")
+    
+    output_prefix = args.out.replace('.bam', '')
+    unsorted_bam_file = f"{output_prefix}.annotated.unsorted.bam"
+    sorted_bam_file = f"{output_prefix}.annotated.bam"
+    qc_report_file = f"{output_prefix}_qc_summary.csv"
+    
+    log_message(f"Temporary unsorted BAM will be written to: {unsorted_bam_file}")
+    output_bam = pysam.AlignmentFile(unsorted_bam_file, "wb", template=input_bam)
+
+    header_dict = input_bam.header.to_dict()
+
+    SyncManager.register('Counter', Counter)
+    manager = Manager()
+    
+    debug_gene_log_list = manager.list() if args.debug_gene else None
+    debug_novel_log_list = manager.list() if args.debug_novel_type else None
+    
+    pool = Pool(processes=args.threads, initializer=worker_init, initargs=((genes, all_donors, all_acceptors), header_dict, args.min_intron_len, args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list))
+
+    abundance_counter = manager.Counter()
+    classification_counter = manager.Counter()
+    known_genes_found = manager.dict()
+    known_transcripts_found = manager.dict()
+    novel_gene_counter = manager.Value('i', 0)
+    novel_transcript_counter = manager.Value('i', 0)
+    novel_transcripts = manager.dict()
+    novel_genes = manager.dict()
+
+    log_message("Submitting and processing reads...")
+    main_process_header = pysam.AlignmentHeader.from_dict(header_dict)
+    chunk_generator = read_bam_in_chunks(input_bam, args.chunk_size, args.num_reads, debug_region)
+
+    total_reads_processed = 0
+    next_progress_report = 100000
+
+    for annotated_chunk in pool.imap_unordered(process_chunk, chunk_generator):
+        for classification, gene_id, transcript_id, read_string in annotated_chunk:
+            read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
+            read_strand = '-' if read.is_reverse else '+'
+            final_gene_id, final_transcript_id = gene_id, transcript_id
+
+            if gene_id == "NOVELG":
+                gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
+                if gene_locus not in novel_genes:
+                    novel_gene_counter.value += 1
+                    novel_genes[gene_locus] = f"NOVELG{novel_gene_counter.value:06d}"
+                final_gene_id = novel_genes[gene_locus]
+                read.set_tag("GX", final_gene_id)
+
+            if transcript_id in ["NOVEL", "NOVELT"]:
+                transcript_locus = (read.reference_name, tuple(get_read_splice_junctions(read, args.min_intron_len)), read_strand)
+                if transcript_locus not in novel_transcripts:
+                    novel_transcript_counter.value += 1
+                    new_id = f"NOVELT{novel_transcript_counter.value:010d}"
+                    novel_transcripts[transcript_locus] = {
+                        'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
+                        'strand': read_strand, 'exons': [(b[0], b[0]+b[1]) for b in read.get_blocks()]
+                    }
+                final_transcript_id = novel_transcripts[transcript_locus]['id']
+                read.set_tag("TX", final_transcript_id)
+
+            output_bam.write(read)
+            total_reads_processed += 1
+
+            if classification in ["Known", "ISM"]:
+                known_genes_found[final_gene_id] = True
+                known_transcripts_found[final_transcript_id] = True
+            
+            abundance_key = (final_gene_id, final_transcript_id, classification)
+            abundance_counter.update([abundance_key])
+            classification_counter.update([classification])
+        
+        if not args.debug_gene and total_reads_processed >= next_progress_report:
+            log_message(f"Processed {total_reads_processed:,} reads...")
+            next_progress_report += 100000
+
+    pool.close()
+    pool.join()
+    input_bam.close()
+    output_bam.close()
+
+    if args.debug_gene and debug_gene_log_list:
+        debug_filename = f"{output_prefix}_debug_gene_{args.debug_gene}.txt"
+        log_message(f"Writing gene debug log to {debug_filename}")
+        
+        gtf_model_output = ["--- GTF ANNOTATION MODELS ---"]
+        if debug_gene_info:
+            for tx_id, tx_data in sorted(debug_gene_info['transcripts'].items()):
+                exons = tx_data['exons']
+                junctions = []
+                for i in range(len(exons) - 1):
+                    junctions.append((exons[i][1], exons[i+1][0]))
+                gtf_model_output.append(f"GTF_MODEL\tTranscript:{tx_id}\tJunctions:{junctions}")
+        gtf_model_output.append("\n--- READ CLASSIFICATIONS ---")
+        
+        with open(debug_filename, 'w') as f:
+            f.write("\n".join(gtf_model_output))
+            f.write("\n")
+            for line in sorted(list(debug_gene_log_list)):
+                f.write(line + '\n')
+
+    if args.debug_novel_type and debug_novel_log_list:
+        debug_filename = f"{output_prefix}_debug_{args.debug_novel_type}.txt"
+        log_message(f"Writing debug log for '{args.debug_novel_type}' to {debug_filename}")
+        with open(debug_filename, 'w') as f:
+            for line in sorted(list(debug_novel_log_list)):
+                f.write(line + '\n')
+
+    final_abundance = Counter(dict(abundance_counter.items()))
+    generate_qc_report(final_abundance, gene_id_to_name, qc_report_file)
+    sort_and_index_bam(unsorted_bam_file, sorted_bam_file)
+
+    log_message("--- Final Statistics ---")
+    log_message(f"Known genes detected: {len(known_genes_found)}")
+    log_message(f"Known transcripts detected: {len(known_transcripts_found)}")
+    log_message(f"Novel genes discovered: {len(novel_genes)}")
+    log_message(f"Novel transcripts discovered: {len(novel_transcripts)}")
+    log_message("--- Read Classification Summary ---")
+    
+    final_class_counts = dict(classification_counter.items())
+    for classification_type in sorted(final_class_counts.keys()):
+        count = final_class_counts[classification_type]
+        log_message(f"{classification_type}: {count:,} reads")
+    log_message("------------------------")
+    end_time = time.time()
+    log_message(f"Annotation complete. Final output file: {sorted_bam_file}")
+    log_message(f"Total runtime: {end_time - start_time:.2f} seconds.")
 
 if __name__ == "__main__":
     main()
+
+
+
+
+
+
