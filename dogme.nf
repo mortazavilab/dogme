@@ -6,6 +6,7 @@ include { mainWorkflow } from './nanoporeModule'
 include { reportsWorkflow } from './nanoporeModule'
 include { remapWorkflow } from './nanoporeModule'
 include { modificationWorkflow } from './nanoporeModule'
+include { annotateRNAWorkflow } from './nanoporeModule'
 
 def getParamOrDefault(param, defaultValue) {
     if (param == null || param == 'null' || param == 'undefined' || !param) {
@@ -73,6 +74,33 @@ workflow modkit {
                          }
 
     modificationWorkflow(mappedBams, theModel)
+}
+
+workflow annotateRNA {
+    // 1. Create a channel from all mapped BAM files in the specified directory.
+    // 2. Filter out any containing "unmapped".
+    // 3. Filter to keep only those that have a corresponding .bai index file.
+    // 4. Map the results to the tuple format expected by annotateRNAWorkflow.
+    mappedBams = Channel.fromPath("${params.bamDir}/*.bam")
+        .filter { bam -> !bam.name.contains('unmapped') }
+        .filter { bam -> file(bam.toString() + '.bai').exists() }
+        .map { bam ->
+            def bai = file(bam.toString() + '.bai')
+            def genomeName = bam.baseName.replaceFirst("^${params.sample}\\.", "")
+            tuple(genomeName, bam, bai)
+        }
+
+    // Build a channel of (genomeName, gtf_path) from params.genome_annot_refs
+    gtf_ch = Channel
+        .fromList(params.genome_annot_refs)
+        .map { ref -> tuple(ref.name, file(ref.annot)) }
+
+    // Join mapped BAMs with GTFs by genome name
+    mappedBamsWithGtf = mappedBams
+        .join(gtf_ch, by: 0)
+        .map { genomeName, bam, bai, gtf -> tuple(bam, bai, genomeName, gtf) }
+
+    annotateRNAWorkflow(mappedBamsWithGtf)
 }
 
 workflow reports {

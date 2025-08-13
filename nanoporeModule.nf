@@ -335,6 +335,23 @@ process gtfToJunctionBed {
     """
 }
 
+process annotateRNATask {
+    input:
+    tuple path(bam), path(bai), val(genomeName), path(gtf)
+    output:
+    path "*.annotated.bam"
+    path "*_qc_summary.csv"
+    publishDir params.annotDir, mode: 'copy'
+    script:
+    """
+    python3 ${projectDir}/scripts/annotateRNA.py \
+        --bam ${bam} \
+        --gtf ${gtf} \
+        --out ${params.sample}.${genomeName} \
+        --threads ${task.cpus}
+    """
+}
+
 
 workflow modificationWorkflow {
     take:
@@ -481,4 +498,23 @@ workflow reportsWorkflow {
     placeholder1 = Channel.of(params.bamDir)
     placeholder2 = Channel.of(param.tmpDir)
     generateReport(params.topDir, placeholder1, placeholder2)
+}
+
+workflow annotateRNAWorkflow {
+    take:
+    mapped_bams_ch   // tuples: (bam, bai, genomeName)
+
+    main:
+    // Create a channel of (genomeName, gtf_path) from params.genome_annot_refs
+    gtf_ch = Channel
+        .fromList(params.genome_annot_refs)
+        .map { ref -> tuple(ref.name, file(ref.annot)) }
+
+    // Join mapped BAMs with GTFs by genome name
+    mappedBamsWithGtf = mapped_bams_ch
+        .map { bam, bai, genomeName -> tuple(genomeName, bam, bai) }
+        .join(gtf_ch, by: 0)
+        .map { genomeName, bam, bai, gtf -> tuple(bam, bai, genomeName, gtf) }
+
+    annotateRNATask(mappedBamsWithGtf)
 }
