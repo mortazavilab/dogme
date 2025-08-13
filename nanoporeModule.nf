@@ -485,6 +485,11 @@ workflow remapWorkflow {
         placeholder2 = Channel.of(param.tmpDir)
         generateReport(params.topDir, placeholder1, placeholder2)
     }
+
+    // Add annotation step for RNA or CDNA
+    if (params.readType == 'RNA' || params.readType == 'CDNA') {
+        annotateRNAWorkflow(mappedBams)
+    }
 }
 
 workflow reportsWorkflow {
