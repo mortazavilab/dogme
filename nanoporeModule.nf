@@ -339,7 +339,7 @@ process annotateRNATask {
     input:
     tuple path(bam), path(bai), val(genomeName), path(gtf)
     output:
-    path "*.annotated.bam"
+    path "*.annotated.ba*"
     path "*_qc_summary.csv"
     publishDir params.annotDir, mode: 'copy'
     script:
