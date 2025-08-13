@@ -104,10 +104,10 @@ process minimapTask {
     """
     . ${params.scriptEnv}
     if [[ "${params.readType}" == "RNA" ]]; then
-        python ${projectDir}/scripts/gtf_junction_bed.py -i ${annotRed} > junc.bed
+        python ${projectDir}/scripts/gtf_junction_bed.py -i ${annotRef} > junc.bed
         minimap2_opts="-ax splice -uf -G 500000 --junc-bed junc.bed"
     elif [[ "${params.readType}" == "CDNA" ]]; then
-        python ${projectDir}/scripts/gtf_junction_bed.py -i ${annotRed} > junc.bed
+        python ${projectDir}/scripts/gtf_junction_bed.py -i ${annotRef} > junc.bed
         minimap2_opts="-ax splice:hq -uf -G 500000 --junc-bed junc.bed"
     else
         minimap2_opts="-ax lr:hq"
