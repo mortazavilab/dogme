@@ -104,11 +104,13 @@ process minimapTask {
     """
     . ${params.scriptEnv}
     if [[ "${params.readType}" == "RNA" ]]; then
-        minimap2_opts="-ax splice -uf --junc-bed ${annotRef}"
+        python ${projectDir}/scripts/gtf_junction_bed.py -i ${annotRed} > junc.bed
+        minimap2_opts="-ax splice -uf -G 500000 --junc-bed junc.bed"
     elif [[ "${params.readType}" == "CDNA" ]]; then
-        minimap2_opts="-ax splice:hq -uf --junc-bed ${annotRef}"  
+        python ${projectDir}/scripts/gtf_junction_bed.py -i ${annotRed} > junc.bed
+        minimap2_opts="-ax splice:hq -uf -G 500000 --junc-bed junc.bed"
     else
-        minimap2_opts="-ax lr:hq"  
+        minimap2_opts="-ax lr:hq"
     fi
     samtools fastq --threads 64 -T MM,ML,pt ${params.sample}.unmapped.bam | \
     minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} - | \
@@ -322,6 +324,17 @@ process consolidateOpenChromatinBgTask {
     """
 }
 
+process gtfToJunctionBed {
+    input:
+    path gtf_file
+    output:
+    path "*.junctions.bed"
+    script:
+    """
+    python3 ${projectDir}/scripts/gtf_to_junction_bed.py ${gtf_file} > ${gtf_file.simpleName}.junctions.bed
+    """
+}
+
 
 workflow modificationWorkflow {
     take:
@@ -419,6 +432,7 @@ workflow mainWorkflow {
     }
 
     def genomeAnnotChannel = Channel.fromList(params.genome_annot_refs)
+
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
