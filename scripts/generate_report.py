@@ -3,6 +3,7 @@ import hashlib
 import os
 import argparse
 import csv
+import glob
 from pathlib import Path
 from datetime import datetime
 
@@ -15,11 +16,13 @@ def compute_md5(file_path):
 
 def collect_file_info(directory, extensions):
     file_data = []
-    for subfolder, ext in [("bams", ".bam"), ("bedMethyl", ".bed")]:
-        target_dir = Path(directory) / subfolder
-        if not target_dir.exists():
+    for subfolder, ext in [("bams", "bam"), ("bedMethyl", "bed"), ("openChromatin", "bed"),  ("annot", "bam")]:
+        target_dir = os.path.join(directory, subfolder)
+        if not os.path.exists(target_dir):
             continue
-        for filepath in target_dir.rglob(f'*{ext}'):
+        pattern = os.path.join(target_dir, f'*.{ext}')
+        for filepath_str in glob.glob(pattern):
+            filepath = Path(filepath_str)
             size_bytes = filepath.stat().st_size
             file_data.append({
                 'filename': filepath.name,

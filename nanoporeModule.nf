@@ -1,5 +1,11 @@
 #!/usr/bin/env nextflow
 nextflow.enable.dsl=2
+
+
+// Use Nextflow's 'include' to alias openChromatinTask for bg and bed
+include { openChromatinTask as openChromatinTaskBg } from './modkitModule'
+include { openChromatinTask as openChromatinTaskBed } from './modkitModule'
+
 process softwareVTask {
     input:
     val version
@@ -98,18 +104,42 @@ process minimapTask {
     """
     . ${params.scriptEnv}
     if [[ "${params.readType}" == "RNA" ]]; then
-        minimap2_opts="-ax splice -uf --junc-bed ${annotRef}"
+        python ${projectDir}/scripts/gtf_to_junction_bed.py ${annotRef} > junc.bed
+        minimap2_opts="-ax splice -uf -G 500000 --junc-bed junc.bed"
     elif [[ "${params.readType}" == "CDNA" ]]; then
-        minimap2_opts="-ax splice:hq -uf --junc-bed ${annotRef}"  
+        python ${projectDir}/scripts/gtf_to_junction_bed.py ${annotRef} > junc.bed
+        minimap2_opts="-ax splice:hq -uf -G 500000 --junc-bed junc.bed"
     else
-        minimap2_opts="-ax lr:hq"  
+        minimap2_opts="-ax lr:hq"
     fi
     samtools fastq --threads 64 -T MM,ML,pt ${params.sample}.unmapped.bam | \
-    minimap2 -t 64 \$minimap2_opts --secondary=no --MD -y ${genomeRef} - | \
+    minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} - | \
     samtools sort - --threads 64 > ${params.sample}.${genomeName}.bam \
     && samtools index -@ 64 ${params.sample}.${genomeName}.bam
     """
 }
+
+process getChrListTask {
+    tag "${genomeName}"
+
+    input:
+    tuple path(mapped_bam), path(mapped_bai), val(genomeName)
+
+    output:
+    tuple path(chr_sizes_file), path(mapped_bam), path(mapped_bai), val(genomeName)
+
+    publishDir path: "${params.topDir}/stats", pattern: "${chr_sizes_file}", mode: 'copy'
+
+    script:
+    chr_sizes_file = "${params.sample}.${genomeName}.chr_sizes.txt"
+    """
+     . ${params.scriptEnv}   
+    # Use cut -f 1,2 to get chromosome name and size (length)
+    # Filter out unmapped reads (*) and alternative contigs
+    samtools idxstats ${mapped_bam} | cut -f 1,2 | grep -v '*' > "${chr_sizes_file}"
+    """
+}
+
 
 //splitbam files into plus and minus strands for direct rna
 process separateStrandsTask {
@@ -214,25 +244,41 @@ process splitModificationTask {
     script:
     """
     . ${params.scriptEnv}
-    if [[ "${params.readType}" == "DNA" ]]; then
+    if [[ "${params.readType}" == "DNA" ]]; then 
         # Extract 5mCG (methylation)
-        grep -w 'm' "${inputFile}" > "${inputFile.baseName}.5mCG.filtered.bed"
+        if grep -q 'm' "${inputFile}"; then
+            grep -w 'm' "${inputFile}" > "${inputFile.baseName}.5mCG.filtered.bed"
+        fi
         # Extract 5hmCG (hydroxymethylation)
-        grep -w 'h' "${inputFile}" > "${inputFile.baseName}.5hmCG.filtered.bed"
+        if grep -q 'h' "${inputFile}"; then
+            grep -w 'h' "${inputFile}" > "${inputFile.baseName}.5hmCG.filtered.bed"
+        fi
         # Extract 6mA
-        grep -w 'a' "${inputFile}" > "${inputFile.baseName}.6mA.filtered.bed"
+        if grep -q 'a' "${inputFile}"; then
+            grep -w 'a' "${inputFile}" > "${inputFile.baseName}.6mA.filtered.bed"
+        fi
     elif [[ "${params.readType}" == "RNA" ]]; then
         base_name="\$(basename "${inputFile}" .bed)"
         # Extract m6A modifications (Plus & Minus strands)
-        grep -w 'a' "${inputFile}" > "\${base_name/filtered*/m6A.filtered}.bed"
+        if grep -q 'a' "${inputFile}"; then
+            grep -w 'a' "${inputFile}" > "\${base_name/filtered*/m6A.filtered}.bed"
+        fi
         # Extract inosine modifications (Plus & Minus strands)
-        grep -w '17596' "${inputFile}" > "\${base_name/filtered*/inosine.filtered}.bed"
+        if grep -q '17596' "${inputFile}"; then
+            grep -w '17596' "${inputFile}" > "\${base_name/filtered*/inosine.filtered}.bed"
+        fi
         # Extract pseudouridine (pseU) modifications (Plus & Minus strands)
-        grep -w '17802' "${inputFile}" > "\${base_name/filtered*/pseU.filtered}.bed"
+        if grep -q '17802' "${inputFile}"; then
+            grep -w '17802' "${inputFile}" > "\${base_name/filtered*/pseU.filtered}.bed"
+        fi
         # Extract m5C modifications (Plus & Minus strands)
-        grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}.bed"
+        if grep -q 'm' "${inputFile}"; then
+            grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}.bed"
+        fi
         # Extract Nm modifications (Plus & Minus strands)
-        grep -Ew '19228|19229|19227|69426' "${inputFile}" > "\${base_name/filtered*/Nm.filtered}.bed"
+        if grep -qE '19228|19229|19227|69426' "${inputFile}"; then
+            grep -Ew '19228|19229|19227|69426' "${inputFile}" > "\${base_name/filtered*/Nm.filtered}.bed"
+        fi
     fi
     """
 }
@@ -242,6 +288,7 @@ process generateReport {
     input:
     path report_inputs
     path results
+    path openBeds
     output:
     path "report.tsv", emit: report
     publishDir params.topDir, mode: 'copy'
@@ -251,7 +298,136 @@ process generateReport {
     """
 }
 
-workflow modWorkflow {
+process consolidateOpenChromatinBedTask {
+    tag "${params.sample}.${genomeName}"
+    input:
+    tuple val(genomeName), path(bed_files)
+    output:
+    path "${params.sample}.${genomeName}.m6Aopen.bed"
+    publishDir "${params.topDir}/openChromatin", mode: 'copy'
+    script:
+    """
+    cat \$(ls ${bed_files} | sort) > ${params.sample}.${genomeName}.m6Aopen.bed
+    """
+}
+
+process consolidateOpenChromatinBgTask {
+    tag "${params.sample}.${genomeName}"
+    input:
+    tuple val(genomeName), path(bg_files)
+    output:
+    path "${params.sample}.${genomeName}.m6Aopen.bg"
+    publishDir "${params.topDir}/openChromatin", mode: 'copy'
+    script:
+    """
+    cat \$(ls ${bg_files} | sort) | sort -k1,1 -k2,2n > ${params.sample}.${genomeName}.m6Aopen.bg
+    """
+}
+
+process gtfToJunctionBed {
+    input:
+    path gtf_file
+    output:
+    path "*.junctions.bed"
+    script:
+    """
+    python3 ${projectDir}/scripts/gtf_to_junction_bed.py ${gtf_file} > ${gtf_file.simpleName}.junctions.bed
+    """
+}
+
+process annotateRNATask {
+    input:
+    tuple path(bam), path(bai), val(genomeName), path(gtf)
+    output:
+    path "*.annotated.ba*"
+    path "*_qc_summary.csv"
+    publishDir params.annotDir, mode: 'copy'
+    script:
+    """
+    python3 ${projectDir}/scripts/annotateRNA.py \
+        --bam ${bam} \
+        --gtf ${gtf} \
+        --out ${params.sample}.${genomeName} \
+        --threads ${task.cpus}
+    """
+}
+
+
+workflow modificationWorkflow {
+    take:
+    mapped_bams_ch // Channel containing tuples: [path(bam), path(bai), val(genomeName)]
+    model_name     // The 'theModel' variable, needed for the open chromatin check
+
+    main:
+    if (params.readType == 'RNA') {
+        mappedBamsTuplesRNA = mapped_bams_ch.map { it -> tuple(*it) }
+        mappedBamsForStrands = mappedBamsTuplesRNA.map { bam, bai, genomeName -> tuple(bam, genomeName) }
+        strands = separateStrandsTask(mappedBamsForStrands)
+        plusStrand = strands.plus_strand
+        minusStrand = strands.minus_strand
+        combinedStrand = plusStrand.concat(minusStrand)
+        bedfiles = modkitTask(combinedStrand)
+    } else if (params.readType == 'DNA') {
+        mappedBamsTuplesDNA = mapped_bams_ch.map { it -> tuple(*it) }
+
+        if (model_name.contains('6mA')) {
+            chrListOutput = getChrListTask(mappedBamsTuplesDNA)
+            chrInfoForOpenChromatinBed = chrListOutput.flatMap { chr_sizes_file, bam_file, bai_file, genomeName ->
+                chr_sizes_file.readLines().collect { line ->
+                    def parts = line.split('\\t')
+                    tuple(parts[0], parts[1], bam_file, bai_file, genomeName, 'bed')
+                }
+            }
+            chrInfoForOpenChromatinBg = chrListOutput.flatMap { chr_sizes_file, bam_file, bai_file, genomeName ->
+                chr_sizes_file.readLines().collect { line ->
+                    def parts = line.split('\\t')
+                    tuple(parts[0], parts[1], bam_file, bai_file, genomeName, 'bg')
+                }
+            }
+            openChromatinResultsBg = openChromatinTaskBg(chrInfoForOpenChromatinBg)
+            openChromatinResultsBed = openChromatinTaskBed(chrInfoForOpenChromatinBed)
+
+            // Collect all per-chromosome bed files per genome and consolidate
+            openChromatinResultsBed
+                .map { bedfile -> 
+                    def genomeName = bedfile.getParent().getParent().getName()
+                    tuple(genomeName, bedfile)
+                }
+                .groupTuple()
+                .set { perGenomeBedFiles }
+
+            consolidatedBeds = consolidateOpenChromatinBedTask(perGenomeBedFiles)
+
+            // Collect all per-chromosome bg files per genome and consolidate
+            openChromatinResultsBg
+                .map { bgfile ->
+                    def genomeName = bgfile.getParent().getParent().getName()
+                    tuple(genomeName, bgfile)
+                }
+                .groupTuple()
+                .set { perGenomeBgFiles }
+
+            consolidatedBgs = consolidateOpenChromatinBgTask(perGenomeBgFiles)
+        }
+
+        mappedBamsForModkit = mappedBamsTuplesDNA.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
+        bedfiles = modkitTask(mappedBamsForModkit)
+    }
+
+    filterbeds = filterbedTask(bedfiles)
+    splitResults = splitModificationTask(filterbeds)
+    splitResultsReport = splitResults.last()
+    
+    if (model_name.contains('6mA')) {
+        consolidatedBedReport = consolidatedBeds.last()
+    } else {
+        consolidatedBedReport = Channel.of(params.tmpDir)
+    }
+
+    generateReport(params.topDir, splitResultsReport, consolidatedBedReport)
+}
+
+workflow mainWorkflow {
     take:
     theVersion
     theModel 
@@ -273,33 +449,19 @@ workflow modWorkflow {
     }
 
     def genomeAnnotChannel = Channel.fromList(params.genome_annot_refs)
+
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
     mappedBams = minimapTask(unmappedBams)
 
-    if (params.readType == 'RNA') {
-        mappedBamsTuplesRNA = mappedBams.map { it -> tuple(*it) }
-        mappedBamsForStrands = mappedBamsTuplesRNA.map { bam, bai, genomeName -> tuple(bam, genomeName) }
-        strands = separateStrandsTask(mappedBamsForStrands)
-        plusStrand = strands.plus_strand
-        minusStrand = strands.minus_strand
-        combinedStrand = plusStrand.concat(minusStrand)
-        bedfiles = modkitTask(combinedStrand)
-    } else if (params.readType == 'DNA') {
-        mappedBamsTuplesDNA = mappedBams.map { it -> tuple(*it) }
-        mappedBamsForModkit = mappedBamsTuplesDNA.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
-        bedfiles = modkitTask(mappedBamsForModkit)
-    }
-
     if (params.readType == 'RNA' || params.readType == 'DNA') {
-        filterbeds = filterbedTask(bedfiles)
-        splitResults = splitModificationTask(filterbeds)
-        generateReport(launchDir, splitResults)
+        modificationWorkflow(mappedBams, theModel)
     } else {
-        splitResults = Channel.empty()
-        generateReport(launchDir, splitResults)
-    }  
+        placeholder1 = Channel.of(params.tmpDir)
+        placeholder2 = Channel.of(params.tmpDir)
+        generateReport(params.topDir, placeholder1, placeholder2)
+    }
 }
 
 workflow remapWorkflow {
@@ -315,26 +477,18 @@ workflow remapWorkflow {
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
     mappedBams = minimapTask(unmappedBams)
-    if (params.readType == 'RNA') {
-        mappedBamsTuplesRNA = mappedBams.map { it -> tuple(*it) }
-        mappedBamsForStrands = mappedBamsTuplesRNA.map { bam, bai, genomeName -> tuple(bam, genomeName) }
-        strands = separateStrandsTask(mappedBamsForStrands)
-        plusStrand = strands.plus_strand
-        minusStrand = strands.minus_strand
-        combinedStrand = plusStrand.concat(minusStrand)
-        bedfiles = modkitTask(combinedStrand)
-    } else if (params.readType == 'DNA') {
-        mappedBamsTuplesDNA = mappedBams.map { it -> tuple(*it) }
-        mappedBamsForModkit = mappedBamsTuplesDNA.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
-        bedfiles = modkitTask(mappedBamsForModkit)
-    }
+
     if (params.readType == 'RNA' || params.readType == 'DNA') {
-        filterbeds = filterbedTask(bedfiles)
-        splitResults = splitModificationTask(filterbeds)
-        generateReport(launchDir, splitResults)
+        modificationWorkflow(mappedBams, theModel)
     } else {
-        splitResults = Channel.empty()
-        generateReport(launchDir, splitResults)
+        placeholder1 = Channel.of(params.bamDir)
+        placeholder2 = Channel.of(params.tmpDir)
+        generateReport(params.topDir, placeholder1, placeholder2)
+    }
+
+    // Add annotation step for RNA or CDNA
+    if (params.readType == 'RNA' || params.readType == 'CDNA') {
+        annotateRNAWorkflow(mappedBams)
     }
 }
 
@@ -344,11 +498,28 @@ workflow reportsWorkflow {
     modelDirectory
     
     main:
-    // Run softwareVTask without downloading models
     softwareVTask(theVersion, modelDirectory)
     
-    // Generate report using existing results
-    existingResults = Channel.fromPath("${params.bedDir}/*.filtered.*")
-    generateReport(launchDir, existingResults)
+    placeholder1 = Channel.of(params.bamDir)
+    placeholder2 = Channel.of(params.tmpDir)
+    generateReport(params.topDir, placeholder1, placeholder2)
 }
 
+workflow annotateRNAWorkflow {
+    take:
+    mapped_bams_ch   // tuples: (bam, bai, genomeName)
+
+    main:
+    // Create a channel of (genomeName, gtf_path) from params.genome_annot_refs
+    gtf_ch = Channel
+        .fromList(params.genome_annot_refs)
+        .map { ref -> tuple(ref.name, file(ref.annot)) }
+
+    // Join mapped BAMs with GTFs by genome name
+    mappedBamsWithGtf = mapped_bams_ch
+        .map { bam, bai, genomeName -> tuple(genomeName, bam, bai) }
+        .join(gtf_ch, by: 0)
+        .map { genomeName, bam, bai, gtf -> tuple(bam, bai, genomeName, gtf) }
+
+    annotateRNATask(mappedBamsWithGtf)
+}
