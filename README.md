@@ -135,4 +135,4 @@ To annotate mapped BAMs with transcript information:
 nextflow run dogme.nf -entry annotateRNA -c yourconfig.conf
 ```
 
-This will produce annotated BAMs and QC summary files for each genome using the
+This will produce annotated BAMs and QC summary files for each genome using the mapped bams.
