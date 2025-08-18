@@ -8,7 +8,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 - **Modkit Open Chromatin support:**  
   New workflow and entry point to call open chromatin signal and regions in mapped BAMs with m6A modifications using `modkit 0.5` and higher. This produces both a bed files of regions and a bedgraph per genome.
-  - **Transcript Annotation:**  
+- **Transcript Annotation:**  
   New workflow entry point to annotate mapped BAMs with transcript information using `annotateRNA.py`. This produces annotated BAM files, TALON outputs and QC summary CSVs for each genome.
 - **Automatic GTF-to-Junction BED Conversion:**  
   The pipeline now automatically converts GTF files to junction BED files for minimap2 spliced alignment, ensuring correct handling of RNA and cDNA mapping.
