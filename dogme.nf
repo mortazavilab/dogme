@@ -87,20 +87,11 @@ workflow annotateRNA {
         .map { bam ->
             def bai = file(bam.toString() + '.bai')
             def genomeName = bam.baseName.replaceFirst("^${params.sample}\\.", "")
-            tuple(genomeName, bam, bai)
+            return tuple(bam, bai, genomeName)
         }
 
-    // Build a channel of (genomeName, gtf_path) from params.genome_annot_refs
-    gtf_ch = Channel
-        .fromList(params.genome_annot_refs)
-        .map { ref -> tuple(ref.name, file(ref.annot)) }
 
-    // Join mapped BAMs with GTFs by genome name
-    mappedBamsWithGtf = mappedBams
-        .join(gtf_ch, by: 0)
-        .map { genomeName, bam, bai, gtf -> tuple(bam, bai, genomeName, gtf) }
-
-    annotateRNAWorkflow(mappedBamsWithGtf)
+    annotateRNAWorkflow(mappedBams)
 }
 
 workflow reports {
