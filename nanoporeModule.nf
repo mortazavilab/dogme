@@ -349,8 +349,9 @@ process annotateRNATask {
         --bam ${bam} \
         --gtf ${gtf} \
         --out ${params.sample}.${genomeName} \
-        --threads ${task.cpus}
-        --talon
+        --threads ${task.cpus} \
+        --talon \
+        -novel_prefix "${params.sample}_${genomeName}"
     """
 }
 

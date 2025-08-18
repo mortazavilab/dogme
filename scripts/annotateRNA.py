@@ -42,7 +42,6 @@ def parse_gtf(gtf_file):
     all_donors = defaultdict(lambda: defaultdict(set))
     all_acceptors = defaultdict(lambda: defaultdict(set))
     gene_id_to_name = {}
-    # <<< TALON CHANGE: Also store transcript-level info
     transcript_info = {} 
     gene_id_re = re.compile(r'gene_id[ =]"?([^";]+)"?')
     transcript_id_re = re.compile(r'transcript_id[ =]"?([^";]+)"?')
@@ -90,7 +89,6 @@ def parse_gtf(gtf_file):
             if feature_type == 'exon' and transcript_id_match:
                 transcript_id = transcript_id_match.group(1).split('.')[0]
                 genes[chrom][gene_id]['transcripts'][transcript_id]['exons'].append((start, end))
-                # <<< TALON CHANGE: Increment exon count and length for known transcripts
                 if transcript_id in transcript_info:
                     transcript_info[transcript_id]['n_exons'] += 1
                     transcript_info[transcript_id]['length'] += (end - start + 1)
@@ -338,7 +336,6 @@ def read_bam_in_chunks(bam_file, chunk_size, max_reads=None, region=None):
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Output Generation (No changes needed here) ~~~~~
 def generate_qc_report(abundance_counter, gene_id_to_name, qc_filename):
-    # This function is correct as is.
     log_message(f"Generating QC report: {qc_filename}")
     gene_qc_data = defaultdict(lambda: defaultdict(lambda: {'models': set(), 'reads': 0}))
     for (gene_id, transcript_id, classification), count in abundance_counter.items():
@@ -369,7 +366,6 @@ def generate_qc_report(abundance_counter, gene_id_to_name, qc_filename):
                     f"{intergenic_models},{intergenic_reads}\n")
 
 def sort_and_index_bam(unsorted_bam_path, sorted_bam_path):
-    # This function is correct as is.
     log_message(f"Sorting BAM file: {unsorted_bam_path}")
     try:
         subprocess.run(['samtools', 'sort', '-@', '4', '-o', sorted_bam_path, unsorted_bam_path], check=True, stderr=subprocess.DEVNULL)
@@ -468,11 +464,12 @@ def main():
     parser.add_argument("--chunk_size", type=int, default=5000, help="Reads per chunk.")
     parser.add_argument("--num_reads", type=int, default=None, help="Process first N reads.")
     parser.add_argument("--min_intron_len", type=int, default=10, help="Min intron length.")
-    # <<< CHANGED: Added junction tolerance argument
     parser.add_argument("--junc_tolerance", type=int, default=2, help="Tolerance for matching splice junctions (e.g., 2 for +/- 2 bp).")
     parser.add_argument("--debug_gene", type=str, default=None, help="Debug a single gene ID, writing output to a file.")
     parser.add_argument("--debug_novel_type", type=str, default=None, help="Output details for a specific novel class (e.g., NNC, NIC).")
     parser.add_argument("--debug_read", type=str, default=None, help="Debug all possible gene/transcript assignments for a given read ID.")
+    parser.add_argument("--novel_prefix", type=str, default="NOVEL", help="Prefix for novel gene/transcript IDs (default: NOVEL, will use NOVELG/NOVELT automatically)")
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args()
 
     start_time = time.time()
@@ -576,19 +573,18 @@ def main():
             gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
             if gene_locus not in novel_genes:
                 novel_gene_counter += 1
-                novel_genes[gene_locus] = f"NOVELG{novel_gene_counter:06d}"
+                novel_genes[gene_locus] = f"{args.novel_prefix}G{novel_gene_counter:06d}"
             final_gene_id = novel_genes[gene_locus]
         
         read.set_tag("GX", final_gene_id)
 
         # --- Ensure novel transcript IDs are shared for identical junctions ---
         if transcript_id in ["NOVEL", "NOVELT"]:
-            # Use (final_gene_id, junctions, strand) as the key for novel transcripts
             junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
             transcript_locus = (final_gene_id, junctions, read_strand)
             if transcript_locus not in novel_transcripts:
                 novel_transcript_counter += 1
-                new_id = f"NOVELT{novel_transcript_counter:010d}"
+                new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
                 exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
                 novel_transcripts[transcript_locus] = {
                     'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
