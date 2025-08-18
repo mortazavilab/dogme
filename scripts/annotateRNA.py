@@ -25,8 +25,8 @@ from multiprocessing import Pool, Manager
 from multiprocessing.managers import SyncManager
 import pysam
 
-__version__ = "1.1.0" 
-__author__ = "Elnaz A., Gemini, Claude, Ali M."
+__version__ = "1.2.0" 
+__author__ = "Elnaz A., Gemini, Ali M."
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Logging ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def log_message(message, level="INFO"):
@@ -37,85 +37,80 @@ def log_message(message, level="INFO"):
 
 # ~~~~~~~~~~~~~~~~~~~~~~ GTF/GFF3 Parsing ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def parse_gtf(gtf_file):
-    """
-    Parses a GTF/GFF3 file and builds annotation data structures.
-    """
     log_message(f"Parsing annotation file: {gtf_file}")
     genes = defaultdict(dict)
     all_donors = defaultdict(lambda: defaultdict(set))
     all_acceptors = defaultdict(lambda: defaultdict(set))
     gene_id_to_name = {}
+    transcript_info = {} 
     gene_id_re = re.compile(r'gene_id[ =]"?([^";]+)"?')
     transcript_id_re = re.compile(r'transcript_id[ =]"?([^";]+)"?')
     gene_name_re = re.compile(r'gene_name[ =]"?([^";]+)"?')
+    transcript_name_re = re.compile(r'transcript_name[ =]"?([^";]+)"?')
 
     with open(gtf_file, 'r') as f:
         for line in f:
-            if line.startswith('#'):
-                continue
+            if line.startswith('#'): continue
             fields = line.strip().split('\t')
-            if len(fields) < 9:
-                continue
-
+            if len(fields) < 9: continue
+            
             feature_type = fields[2]
-            if feature_type not in ('exon', 'transcript', 'gene'):
-                continue
-
-            chrom, start, end, strand = fields[0], int(fields[3]), int(fields[4]), fields[6]
             attributes = fields[8]
-
             gene_id_match = gene_id_re.search(attributes)
             transcript_id_match = transcript_id_re.search(attributes)
-            gene_name_match = gene_name_re.search(attributes)
 
-            if not gene_id_match:
-                continue
+            if not gene_id_match: continue
             gene_id = gene_id_match.group(1).split('.')[0]
-            if gene_name_match:
-                gene_id_to_name[gene_id] = gene_name_match.group(1)
 
-            if gene_id not in genes[chrom]:
-                genes[chrom][gene_id] = {
-                    'strand': strand,
-                    'start': float('inf'),
-                    'end': float('-inf'),
-                    'transcripts': defaultdict(lambda: {'exons': []}),
-                    'donors': set(),
-                    'acceptors': set()
+            if feature_type == 'transcript' and transcript_id_match:
+                transcript_id = transcript_id_match.group(1).split('.')[0]
+                gene_name_match = gene_name_re.search(attributes)
+                transcript_name_match = transcript_name_re.search(attributes)
+                gene_name = gene_name_match.group(1) if gene_name_match else gene_id
+                transcript_name = transcript_name_match.group(1) if transcript_name_match else transcript_id
+                gene_id_to_name[gene_id] = gene_name
+                transcript_info[transcript_id] = {
+                    "gene_id": gene_id,
+                    "gene_name": gene_name,
+                    "transcript_name": transcript_name,
+                    "n_exons": 0,
+                    "length": 0
                 }
+
+            if feature_type not in ('exon', 'gene'): continue
+
+            chrom, start, end, strand = fields[0], int(fields[3]), int(fields[4]), fields[6]
+            
+            if gene_id not in genes[chrom]:
+                genes[chrom][gene_id] = {'strand': strand, 'start': float('inf'), 'end': float('-inf'), 'transcripts': defaultdict(lambda: {'exons': []}), 'donors': set(), 'acceptors': set()}
             genes[chrom][gene_id]['start'] = min(genes[chrom][gene_id]['start'], start)
             genes[chrom][gene_id]['end'] = max(genes[chrom][gene_id]['end'], end)
 
             if feature_type == 'exon' and transcript_id_match:
                 transcript_id = transcript_id_match.group(1).split('.')[0]
                 genes[chrom][gene_id]['transcripts'][transcript_id]['exons'].append((start, end))
+                if transcript_id in transcript_info:
+                    transcript_info[transcript_id]['n_exons'] += 1
+                    transcript_info[transcript_id]['length'] += (end - start + 1)
 
     for chrom in genes:
         for gene_id in genes[chrom]:
             gene = genes[chrom][gene_id]
-            strand = gene['strand']
             for transcript_id in gene['transcripts']:
                 gene['transcripts'][transcript_id]['exons'].sort()
                 exons = gene['transcripts'][transcript_id]['exons']
-                for i in range(len(exons) - 1):
-                    # For '-' strand, transcription flows from higher to lower coordinates.
-                    # Exon[i+1] is transcribed before exon[i].
-                    # Donor is at start of exon[i+1], Acceptor is at end of exon[i].
-                    if strand == '+':
-                        donor, acceptor = exons[i][1], exons[i+1][0]
-                        all_donors[chrom][strand].add(donor)
-                        all_acceptors[chrom][strand].add(acceptor)
-                        gene['donors'].add(donor)
-                        gene['acceptors'].add(acceptor)
-                    else: # strand == '-'
-                        donor, acceptor = exons[i+1][0], exons[i][1]
-                        all_donors[chrom][strand].add(donor)
-                        all_acceptors[chrom][strand].add(acceptor)
+                if len(exons) > 1:
+                    for i in range(len(exons) - 1):
+                        donor = exons[i][1] if gene['strand'] == '+' else exons[i+1][0]
+                        acceptor = exons[i+1][0] if gene['strand'] == '+' else exons[i][1]
+                        all_donors[chrom][gene['strand']].add(donor)
+                        all_acceptors[chrom][gene['strand']].add(acceptor)
                         gene['donors'].add(donor)
                         gene['acceptors'].add(acceptor)
 
     log_message("Finished parsing annotation.")
-    return genes, all_donors, all_acceptors, gene_id_to_name
+    return genes, all_donors, all_acceptors, gene_id_to_name, transcript_info
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Core Annotation Logic ~~~~~~~~~~~~~~~~~~~~~~~~~~
 def get_read_splice_junctions(read, min_intron_len=10):
@@ -136,7 +131,7 @@ def get_read_splice_junctions(read, min_intron_len=10):
             junctions.append((donor, acceptor))
     return junctions
 
-def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=None, debug_list=None): # <<< CHANGED: Added junc_tolerance
+def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=None, debug_list=None, debug_read=None, debug_read_list=None):
     """
     Classifies a single read based on its splice junctions against the annotation,
     allowing for a configurable tolerance at junction sites.
@@ -161,6 +156,50 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
                 else:
                     overlapping_genes_opp_strand.append((gene_id, gene_data))
 
+    # --- debug_read logic: collect all possible gene/transcript assignments for this read ---
+    if debug_read and debug_read_list is not None and read.query_name == debug_read:
+        debug_lines = []
+        # Collect all overlapping gene IDs (both strands)
+        overlapping_genes_all = [g[0] for g in overlapping_genes_same_strand] + [g[0] for g in overlapping_genes_opp_strand]
+        # Add read info header
+        debug_lines.append(
+            f"READ_INFO\tReadID:{read.query_name}\tChrom:{read_chrom}\tStart:{read_start}\tEnd:{read_end}\tStrand:{read_strand}\tJunctions:{read_junctions}\tOverlappingGenes:{overlapping_genes_all}"
+        )
+        # Same strand overlaps
+        for gene_id, gene_data in overlapping_genes_same_strand:
+            for transcript_id, trans_data in gene_data['transcripts'].items():
+                known_exons = trans_data['exons']
+                known_junctions = [(known_exons[i][1], known_exons[i+1][0]) for i in range(len(known_exons) - 1)]
+                is_full_match = False
+                if len(read_junctions) == len(known_junctions):
+                    is_full_match = all(
+                        abs(r_j[0] - k_j[0]) <= junc_tolerance and abs(r_j[1] - k_j[1]) <= junc_tolerance
+                        for r_j, k_j in zip(read_junctions, known_junctions)
+                    )
+                is_subset_match = False
+                if read_junctions:
+                    matched_known_indices = set()
+                    num_read_juncs_matched = 0
+                    for r_j in read_junctions:
+                        for i, k_j in enumerate(known_junctions):
+                            if i not in matched_known_indices and (abs(r_j[0] - k_j[0]) <= junc_tolerance and abs(r_j[1] - k_j[1]) <= junc_tolerance):
+                                matched_known_indices.add(i)
+                                num_read_juncs_matched += 1
+                                break
+                    if num_read_juncs_matched == len(read_junctions):
+                        is_subset_match = True
+                debug_lines.append(
+                    f"ASSIGNMENT\tGene:{gene_id}\tTranscript:{transcript_id}\tFullMatch:{is_full_match}\tSubsetMatch:{is_subset_match}\tKnownJunctions:{known_junctions}"
+                )
+        # Opposite strand overlaps
+        for gene_id, gene_data in overlapping_genes_opp_strand:
+            debug_lines.append(f"ASSIGNMENT\tGene:{gene_id}\tTranscript:NA\tFullMatch:NA\tSubsetMatch:NA\t[Opposite strand]")
+        # If no overlaps
+        if not overlapping_genes_same_strand and not overlapping_genes_opp_strand:
+            debug_lines.append("ASSIGNMENT\tNo overlapping genes found for this read.")
+        for line in debug_lines:
+            debug_read_list.append(line)
+
     result = None
     if overlapping_genes_same_strand:
         potential_matches = []
@@ -168,16 +207,12 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
             for transcript_id, trans_data in gene_data['transcripts'].items():
                 known_exons = trans_data['exons']
                 known_junctions = [(known_exons[i][1], known_exons[i+1][0]) for i in range(len(known_exons) - 1)]
-
-                # <<< CHANGED: Logic replaced with tolerant matching
-                # Check for a full splice match within tolerance
                 is_full_match = False
                 if len(read_junctions) == len(known_junctions):
                     is_full_match = all(
                         abs(r_j[0] - k_j[0]) <= junc_tolerance and abs(r_j[1] - k_j[1]) <= junc_tolerance
                         for r_j, k_j in zip(read_junctions, known_junctions)
                     )
-                
                 if is_full_match:
                     potential_matches.append({"is_full_match": True, "gene_id": gene_id, "transcript_id": transcript_id})
                     continue # Found best possible match for this transcript
@@ -251,25 +286,30 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
     return classification, final_gene_id, final_transcript_id, read
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Parallel Processing & I/O ~~~~~~~~~~~~~~~~~~~~~~
-# <<< CHANGED: Added junc_tolerance to worker initialization
-def worker_init(annotation_data, header_dict, min_len, tolerance, debug_gene_id=None, debug_novel_type=None, debug_gene_list=None, debug_novel_list=None, debug_gene_info=None):
-    global worker_annotation, worker_header, worker_min_intron_len, worker_junc_tolerance, worker_debug_gene, worker_debug_novel_type, worker_debug_gene_list, worker_debug_novel_list, worker_debug_gene_info
+def worker_init(annotation_data, header_dict, min_len, tolerance, debug_gene_id=None, debug_novel_type=None, debug_gene_list=None, debug_novel_list=None, debug_gene_info=None, debug_read_id=None, debug_read_list=None):
+    global worker_annotation, worker_header, worker_min_intron_len, worker_junc_tolerance, worker_debug_gene, worker_debug_novel_type, worker_debug_gene_list, worker_debug_novel_list, worker_debug_gene_info, worker_debug_read_id, worker_debug_read_list
     worker_annotation = annotation_data
     worker_header = pysam.AlignmentHeader.from_dict(header_dict)
     worker_min_intron_len = min_len
-    worker_junc_tolerance = tolerance # <<< CHANGED
+    worker_junc_tolerance = tolerance
     worker_debug_gene = debug_gene_id
     worker_debug_novel_type = debug_novel_type
     worker_debug_gene_list = debug_gene_list
     worker_debug_novel_list = debug_novel_list
     worker_debug_gene_info = debug_gene_info
+    worker_debug_read_id = debug_read_id
+    worker_debug_read_list = debug_read_list
 
 def process_chunk(read_strings):
     results = []
     for read_string in read_strings:
         read = pysam.AlignedSegment.fromstring(read_string, worker_header)
-        # <<< CHANGED: Pass junc_tolerance to classify_read
-        result = classify_read(read, worker_annotation, worker_min_intron_len, worker_junc_tolerance, worker_debug_gene, worker_debug_gene_list)
+        result = classify_read(
+            read, worker_annotation, worker_min_intron_len, worker_junc_tolerance,
+            worker_debug_gene, worker_debug_gene_list,
+            worker_debug_read_id if 'worker_debug_read_id' in globals() else None,
+            worker_debug_read_list if 'worker_debug_read_list' in globals() else None
+        )
         if result:
             classification, gene_id, transcript_id, annotated_read = result
             results.append((classification, gene_id, transcript_id, annotated_read.to_string()))
@@ -296,7 +336,6 @@ def read_bam_in_chunks(bam_file, chunk_size, max_reads=None, region=None):
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Output Generation (No changes needed here) ~~~~~
 def generate_qc_report(abundance_counter, gene_id_to_name, qc_filename):
-    # This function is correct as is.
     log_message(f"Generating QC report: {qc_filename}")
     gene_qc_data = defaultdict(lambda: defaultdict(lambda: {'models': set(), 'reads': 0}))
     for (gene_id, transcript_id, classification), count in abundance_counter.items():
@@ -327,7 +366,6 @@ def generate_qc_report(abundance_counter, gene_id_to_name, qc_filename):
                     f"{intergenic_models},{intergenic_reads}\n")
 
 def sort_and_index_bam(unsorted_bam_path, sorted_bam_path):
-    # This function is correct as is.
     log_message(f"Sorting BAM file: {unsorted_bam_path}")
     try:
         subprocess.run(['samtools', 'sort', '-@', '4', '-o', sorted_bam_path, unsorted_bam_path], check=True, stderr=subprocess.DEVNULL)
@@ -342,6 +380,78 @@ def sort_and_index_bam(unsorted_bam_path, sorted_bam_path):
         log_message(f"ERROR: samtools command failed: {e}", level="ERROR")
         sys.exit(1)
 
+def generate_talon_output(abundance, transcript_info, novel_models, gene_id_to_name, prefix, sample_name):
+    """
+    Generates a TALON-compatible abundance file.
+    """
+    talon_abundance_file = f"{prefix}_talon_abundance.tsv"
+    log_message(f"Generating TALON abundance file: {talon_abundance_file}")
+
+    # Combine known and novel transcript info into one lookup
+    full_transcript_db = {}
+    # Known transcripts
+    for tx_id, info in transcript_info.items():
+        full_transcript_db[tx_id] = info
+    # Novel transcripts
+    for model in novel_models.values():
+        full_transcript_db[model['id']] = {
+            "gene_id": model['gene_id'],
+            "gene_name": gene_id_to_name.get(model['gene_id'], model['gene_id']),
+            "transcript_name": model['id'],
+            "n_exons": len(model['exons']),
+            "length": sum(end - start + 1 for start, end in model['exons'])
+        }
+
+    with open(talon_abundance_file, 'w') as f:
+        header = [
+            "gene_ID", "transcript_ID", "annot_gene_id", "annot_transcript_id",
+            "annot_gene_name", "annot_transcript_name", "n_exons", "length",
+            "gene_novelty", "transcript_novelty", "ISM_subtype", sample_name
+        ]
+        f.write("\t".join(header) + "\n")
+
+        # Use a set to track written transcripts to avoid duplicates
+        written_transcripts = set()
+
+        for (gene_id, transcript_id, classification), count in abundance.items():
+            if transcript_id in written_transcripts:
+                continue
+            
+            info = full_transcript_db.get(transcript_id)
+            if not info:
+                # Handle edge cases like ANTISENSE/NOVELT where info might not be pre-computed
+                info = { "gene_id": gene_id, "gene_name": gene_id, "transcript_name": transcript_id, "n_exons": "NA", "length": "NA" }
+
+            # Determine novelty types
+            gene_novelty = "Known"
+            if gene_id.startswith("NOVELG"):
+                gene_novelty = "Intergenic"
+            elif classification == "Antisense":
+                gene_novelty = "Antisense"
+
+            transcript_novelty = classification
+            
+            # For TALON, novel transcripts have annot_id = talon_id
+            annot_gene_id = info['gene_id']
+            annot_transcript_id = transcript_id
+            
+            # Fill in the data for the row
+            row_data = [
+                info['gene_id'],
+                transcript_id,
+                annot_gene_id,
+                annot_transcript_id,
+                info['gene_name'],
+                info['transcript_name'],
+                str(info['n_exons']),
+                str(info['length']),
+                gene_novelty,
+                transcript_novelty,
+                "NA",  # ISM subtype is not determined by this script
+                str(count)
+            ]
+            f.write("\t".join(row_data) + "\n")
+            written_transcripts.add(transcript_id)
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Main Orchestrator ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def main():
@@ -354,10 +464,12 @@ def main():
     parser.add_argument("--chunk_size", type=int, default=5000, help="Reads per chunk.")
     parser.add_argument("--num_reads", type=int, default=None, help="Process first N reads.")
     parser.add_argument("--min_intron_len", type=int, default=10, help="Min intron length.")
-    # <<< CHANGED: Added junction tolerance argument
     parser.add_argument("--junc_tolerance", type=int, default=2, help="Tolerance for matching splice junctions (e.g., 2 for +/- 2 bp).")
     parser.add_argument("--debug_gene", type=str, default=None, help="Debug a single gene ID, writing output to a file.")
     parser.add_argument("--debug_novel_type", type=str, default=None, help="Output details for a specific novel class (e.g., NNC, NIC).")
+    parser.add_argument("--debug_read", type=str, default=None, help="Debug all possible gene/transcript assignments for a given read ID.")
+    parser.add_argument("--novel_prefix", type=str, default="NOVEL", help="Prefix for novel gene/transcript IDs (default: NOVEL, will use NOVELG/NOVELT automatically)")
+    parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args()
 
     start_time = time.time()
@@ -365,12 +477,16 @@ def main():
         args.threads = 1
         log_message(f"DEBUG MODE: Focusing on gene '{args.debug_gene}'. Forcing threads to 1.", level="DEBUG")
 
+    if args.debug_read:
+        args.threads = 1
+        log_message(f"DEBUG MODE: Focusing on read '{args.debug_read}'. Forcing threads to 1.", level="DEBUG")
+
     log_message(f"Starting annotation process with {args.threads} threads.")
     log_message(f"Junction tolerance set to: +/- {args.junc_tolerance} bp.") # <<< CHANGED
     if args.num_reads:
         log_message(f"Processing only the first {args.num_reads:,} reads.")
     
-    genes, all_donors, all_acceptors, gene_id_to_name = parse_gtf(args.gtf)
+    genes, all_donors, all_acceptors, gene_id_to_name, transcript_info = parse_gtf(args.gtf)
     debug_region = None
     debug_gene_info = None
 
@@ -411,10 +527,12 @@ def main():
     manager = Manager()
     debug_gene_log_list = manager.list() if args.debug_gene else None
     debug_novel_log_list = manager.list() if args.debug_novel_type else None
-    # <<< CHANGED: Pass junction tolerance to workers
+    debug_read_log_list = manager.list() if args.debug_read else None
+
     pool = Pool(processes=args.threads, initializer=worker_init, initargs=(
         (genes, all_donors, all_acceptors), header_dict, args.min_intron_len, args.junc_tolerance,
-        args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list, debug_gene_info
+        args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list, debug_gene_info,
+        args.debug_read, debug_read_log_list
     ))
 
     abundance_counter = Counter()
@@ -455,18 +573,26 @@ def main():
             gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
             if gene_locus not in novel_genes:
                 novel_gene_counter += 1
-                novel_genes[gene_locus] = f"NOVELG{novel_gene_counter:06d}"
+                novel_genes[gene_locus] = f"{args.novel_prefix}G{novel_gene_counter:06d}"
             final_gene_id = novel_genes[gene_locus]
-            read.set_tag("GX", final_gene_id)
+        
+        read.set_tag("GX", final_gene_id)
 
+        # --- Ensure novel transcript IDs are shared for identical junctions ---
         if transcript_id in ["NOVEL", "NOVELT"]:
-            transcript_locus = (final_gene_id, tuple(get_read_splice_junctions(read, args.min_intron_len)), read_strand)
+            junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
+            transcript_locus = (final_gene_id, junctions, read_strand)
             if transcript_locus not in novel_transcripts:
                 novel_transcript_counter += 1
-                new_id = f"NOVELT{novel_transcript_counter:010d}"
-                novel_transcripts[transcript_locus] = new_id
-            final_transcript_id = novel_transcripts[transcript_locus]
-            read.set_tag("TX", final_transcript_id)
+                new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
+                exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
+                novel_transcripts[transcript_locus] = {
+                    'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
+                    'strand': read_strand, 'exons': exons
+                }
+            final_transcript_id = novel_transcripts[transcript_locus]['id']
+        
+        read.set_tag("TX", final_transcript_id)
 
         output_bam.write(read)
 
@@ -503,8 +629,31 @@ def main():
             for line in sorted(list(debug_novel_log_list)):
                 f.write(line + '\n')
     
+    if args.debug_read and debug_read_log_list:
+        debug_filename = f"{output_prefix}_debug_read_{args.debug_read}.txt"
+        log_message(f"Writing debug read assignment log to {debug_filename}")
+        with open(debug_filename, 'w') as f:
+            for line in debug_read_log_list:
+                f.write(line + '\n')
+
     generate_qc_report(abundance_counter, gene_id_to_name, qc_report_file)
     sort_and_index_bam(unsorted_bam_file, sorted_bam_file)
+    
+    if args.talon:
+        # <<< TALON CHANGE: Call the new function with the correct arguments
+        sample_name = os.path.basename(output_prefix)
+        generate_talon_output(abundance_counter, transcript_info, novel_transcripts, gene_id_to_name, output_prefix, sample_name)
+        # Also re-generate the GTF, ensuring it's correct
+        talon_gtf_file = f"{output_prefix}_talon.gtf"
+        log_message(f"Generating TALON GTF file: {talon_gtf_file}")
+        with open(talon_gtf_file, 'w') as f_out:
+            with open(args.gtf, 'r') as f_in:
+                f_out.write(f_in.read())
+            for model in novel_transcripts.values():
+                attributes = f'gene_id "{model["gene_id"]}"; transcript_id "{model["id"]}";'
+                f_out.write(f"\n{model['chrom']}\tTALON\ttranscript\t{model['exons'][0][0]}\t{model['exons'][-1][1]}\t.\t{model['strand']}\t.\t{attributes}")
+                for i, exon in enumerate(model['exons'], 1):
+                    f_out.write(f"\n{model['chrom']}\tTALON\texon\t{exon[0]}\t{exon[1]}\t.\t{model['strand']}\t.\t{attributes} exon_number \"{i}\";")
 
     log_message("--- Final Statistics ---")
     log_message(f"Known genes detected: {len(known_genes_found)}")
