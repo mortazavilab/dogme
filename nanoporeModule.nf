@@ -341,6 +341,7 @@ process annotateRNATask {
     output:
     path "*.annotated.ba*"
     path "*_qc_summary.csv"
+    path "*_talon*"
     publishDir params.annotDir, mode: 'copy'
     script:
     """
@@ -349,6 +350,7 @@ process annotateRNATask {
         --gtf ${gtf} \
         --out ${params.sample}.${genomeName} \
         --threads ${task.cpus}
+        --talon
     """
 }
 
