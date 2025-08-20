@@ -19,6 +19,8 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 - **Bug Fixes and Robustness:**  
   Improved handling of file naming, tuple passing, and channel joining for multi-genome and multi-strand workflows.
 
+Dogme 1.2.1 updates `annotateRNA.py` to correctly label ISMs and lessen the number of NIC and NNC while labeling novel reads only observed once as `solo`. 
+
 ---
 
 ## Installation
@@ -109,7 +111,7 @@ export PATH=${MODKITBASE}/dist_modkit_v0.5.0_5120ef7_tch:$PATH
 Running Dogme on typical dataset can take more than 24 hours, therefore it is recommended to run Dogme within a job or a saved virtual terminal such as screen or Tmux.  Change your folder to be where you want Dogme to run (the 'launch' directory), and launch Dogme directly from github using the following command: 
 
  ```
-  nextflow run mortazavilab/dogme -c yourconfig.conf
+nextflow run mortazavilab/dogme -c yourconfig.conf
 ```
 By default, the pipeline will create several folders within the launch directory such as bams, bedMethyl, fastqs, and kallisto - all of which can be customized in the config file. If you need to resume your work add '-resume' to the nextflow command after deleting the html report and trace files.
 
@@ -130,7 +132,7 @@ By default, the pipeline will create several folders within the launch directory
 To annotate mapped BAMs with transcript information:
 
 ```
-nextflow run dogme.nf -entry annotateRNA -c yourconfig.conf
+nextflow run mortazavilab/dogme -entry annotateRNA -c yourconfig.conf
 ```
 
 This will produce annotated BAMs and QC summary files for each genome using the mapped bams.
