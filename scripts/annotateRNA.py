@@ -19,13 +19,14 @@ import sys
 import time
 import re
 import os
+import csv
 import subprocess
 from collections import defaultdict, Counter
 from multiprocessing import Pool, Manager
 from multiprocessing.managers import SyncManager
 import pysam
 
-__version__ = "1.2.0" 
+__version__ = "1.2.1"
 __author__ = "Elnaz A., Gemini, Ali M."
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Logging ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -42,7 +43,7 @@ def parse_gtf(gtf_file):
     all_donors = defaultdict(lambda: defaultdict(set))
     all_acceptors = defaultdict(lambda: defaultdict(set))
     gene_id_to_name = {}
-    transcript_info = {} 
+    transcript_info = {}
     gene_id_re = re.compile(r'gene_id[ =]"?([^";]+)"?')
     transcript_id_re = re.compile(r'transcript_id[ =]"?([^";]+)"?')
     gene_name_re = re.compile(r'gene_name[ =]"?([^";]+)"?')
@@ -53,7 +54,7 @@ def parse_gtf(gtf_file):
             if line.startswith('#'): continue
             fields = line.strip().split('\t')
             if len(fields) < 9: continue
-            
+
             feature_type = fields[2]
             attributes = fields[8]
             gene_id_match = gene_id_re.search(attributes)
@@ -80,7 +81,7 @@ def parse_gtf(gtf_file):
             if feature_type not in ('exon', 'gene'): continue
 
             chrom, start, end, strand = fields[0], int(fields[3]), int(fields[4]), fields[6]
-            
+
             if gene_id not in genes[chrom]:
                 genes[chrom][gene_id] = {'strand': strand, 'start': float('inf'), 'end': float('-inf'), 'transcripts': defaultdict(lambda: {'exons': []}), 'donors': set(), 'acceptors': set()}
             genes[chrom][gene_id]['start'] = min(genes[chrom][gene_id]['start'], start)
@@ -156,16 +157,12 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
                 else:
                     overlapping_genes_opp_strand.append((gene_id, gene_data))
 
-    # --- debug_read logic: collect all possible gene/transcript assignments for this read ---
     if debug_read and debug_read_list is not None and read.query_name == debug_read:
         debug_lines = []
-        # Collect all overlapping gene IDs (both strands)
         overlapping_genes_all = [g[0] for g in overlapping_genes_same_strand] + [g[0] for g in overlapping_genes_opp_strand]
-        # Add read info header
         debug_lines.append(
             f"READ_INFO\tReadID:{read.query_name}\tChrom:{read_chrom}\tStart:{read_start}\tEnd:{read_end}\tStrand:{read_strand}\tJunctions:{read_junctions}\tOverlappingGenes:{overlapping_genes_all}"
         )
-        # Same strand overlaps
         for gene_id, gene_data in overlapping_genes_same_strand:
             for transcript_id, trans_data in gene_data['transcripts'].items():
                 known_exons = trans_data['exons']
@@ -191,10 +188,8 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
                 debug_lines.append(
                     f"ASSIGNMENT\tGene:{gene_id}\tTranscript:{transcript_id}\tFullMatch:{is_full_match}\tSubsetMatch:{is_subset_match}\tKnownJunctions:{known_junctions}"
                 )
-        # Opposite strand overlaps
         for gene_id, gene_data in overlapping_genes_opp_strand:
             debug_lines.append(f"ASSIGNMENT\tGene:{gene_id}\tTranscript:NA\tFullMatch:NA\tSubsetMatch:NA\t[Opposite strand]")
-        # If no overlaps
         if not overlapping_genes_same_strand and not overlapping_genes_opp_strand:
             debug_lines.append("ASSIGNMENT\tNo overlapping genes found for this read.")
         for line in debug_lines:
@@ -207,6 +202,7 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
             for transcript_id, trans_data in gene_data['transcripts'].items():
                 known_exons = trans_data['exons']
                 known_junctions = [(known_exons[i][1], known_exons[i+1][0]) for i in range(len(known_exons) - 1)]
+
                 is_full_match = False
                 if len(read_junctions) == len(known_junctions):
                     is_full_match = all(
@@ -214,10 +210,13 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
                         for r_j, k_j in zip(read_junctions, known_junctions)
                     )
                 if is_full_match:
-                    potential_matches.append({"is_full_match": True, "gene_id": gene_id, "transcript_id": transcript_id})
-                    continue # Found best possible match for this transcript
+                    potential_matches.append({"category": "Known", "gene_id": gene_id, "transcript_id": transcript_id})
+                    continue
 
-                # Check for an incomplete splice match (subset) within tolerance
+                if not read_junctions and known_junctions:
+                    potential_matches.append({"category": "ISM", "gene_id": gene_id, "transcript_id": transcript_id})
+                    continue
+
                 is_subset_match = False
                 if read_junctions:
                     matched_known_indices = set()
@@ -230,23 +229,21 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
                                 break
                     if num_read_juncs_matched == len(read_junctions):
                         is_subset_match = True
-
+                
                 if is_subset_match:
-                    potential_matches.append({"is_full_match": False, "gene_id": gene_id, "transcript_id": transcript_id})
+                    potential_matches.append({"category": "ISM", "gene_id": gene_id, "transcript_id": transcript_id})
 
-        full_matches = [m for m in potential_matches if m['is_full_match']]
-        ism_matches = [m for m in potential_matches if not m['is_full_match']]
+        known_matches = [m for m in potential_matches if m['category'] == 'Known']
+        ism_matches = [m for m in potential_matches if m['category'] == 'ISM']
 
-        if full_matches:
-            best_match = full_matches[0]
-            classification = "Known"
-            result = (classification, best_match['gene_id'], best_match['transcript_id'])
+        if known_matches:
+            best_match = known_matches[0]
+            result = ("Known", best_match['gene_id'], best_match['transcript_id'])
         elif ism_matches:
             best_match = ism_matches[0]
-            classification = "ISM"
-            result = (classification, best_match['gene_id'], best_match['transcript_id'])
-        else: # Fall through to NIC/NNC logic
-            best_gene_id = overlapping_genes_same_strand[0][0] # Default to first overlapping
+            result = ("ISM", best_match['gene_id'], best_match['transcript_id'])
+        else:
+            best_gene_id = overlapping_genes_same_strand[0][0]
             if not read_junctions:
                 classification = "NIC"
             else:
@@ -254,7 +251,6 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
                 strand_donors = all_donors.get(read_chrom, {}).get(read_strand, set())
                 strand_acceptors = all_acceptors.get(read_chrom, {}).get(read_strand, set())
                 for junc in read_junctions:
-                    # <<< CHANGED: Tolerant check for NIC/NNC
                     read_d, read_a = (junc[0], junc[1])
                     donor = read_d if read_strand == '+' else read_a
                     acceptor = read_a if read_strand == '+' else read_d
@@ -334,7 +330,7 @@ def read_bam_in_chunks(bam_file, chunk_size, max_reads=None, region=None):
     if read_chunk:
         yield read_chunk
 
-# ~~~~~~~~~~~~~~~~~~~~~~ Output Generation (No changes needed here) ~~~~~
+# ~~~~~~~~~~~~~~~~~~~~~~ Output Generation ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def generate_qc_report(abundance_counter, gene_id_to_name, qc_filename):
     log_message(f"Generating QC report: {qc_filename}")
     gene_qc_data = defaultdict(lambda: defaultdict(lambda: {'models': set(), 'reads': 0}))
@@ -381,18 +377,12 @@ def sort_and_index_bam(unsorted_bam_path, sorted_bam_path):
         sys.exit(1)
 
 def generate_talon_output(abundance, transcript_info, novel_models, gene_id_to_name, prefix, sample_name):
-    """
-    Generates a TALON-compatible abundance file.
-    """
     talon_abundance_file = f"{prefix}_talon_abundance.tsv"
     log_message(f"Generating TALON abundance file: {talon_abundance_file}")
 
-    # Combine known and novel transcript info into one lookup
     full_transcript_db = {}
-    # Known transcripts
     for tx_id, info in transcript_info.items():
         full_transcript_db[tx_id] = info
-    # Novel transcripts
     for model in novel_models.values():
         full_transcript_db[model['id']] = {
             "gene_id": model['gene_id'],
@@ -410,48 +400,48 @@ def generate_talon_output(abundance, transcript_info, novel_models, gene_id_to_n
         ]
         f.write("\t".join(header) + "\n")
 
-        # Use a set to track written transcripts to avoid duplicates
         written_transcripts = set()
-
         for (gene_id, transcript_id, classification), count in abundance.items():
-            if transcript_id in written_transcripts:
+            if transcript_id in written_transcripts or transcript_id == "solo":
                 continue
             
             info = full_transcript_db.get(transcript_id)
             if not info:
-                # Handle edge cases like ANTISENSE/NOVELT where info might not be pre-computed
                 info = { "gene_id": gene_id, "gene_name": gene_id, "transcript_name": transcript_id, "n_exons": "NA", "length": "NA" }
 
-            # Determine novelty types
             gene_novelty = "Known"
             if gene_id.startswith("NOVELG"):
                 gene_novelty = "Intergenic"
             elif classification == "Antisense":
                 gene_novelty = "Antisense"
-
             transcript_novelty = classification
-            
-            # For TALON, novel transcripts have annot_id = talon_id
             annot_gene_id = info['gene_id']
             annot_transcript_id = transcript_id
             
-            # Fill in the data for the row
             row_data = [
-                info['gene_id'],
-                transcript_id,
-                annot_gene_id,
-                annot_transcript_id,
-                info['gene_name'],
-                info['transcript_name'],
-                str(info['n_exons']),
-                str(info['length']),
-                gene_novelty,
-                transcript_novelty,
-                "NA",  # ISM subtype is not determined by this script
-                str(count)
+                info['gene_id'], transcript_id, annot_gene_id, annot_transcript_id,
+                info['gene_name'], info['transcript_name'], str(info['n_exons']),
+                str(info['length']), gene_novelty, transcript_novelty, "NA", str(count)
             ]
             f.write("\t".join(row_data) + "\n")
             written_transcripts.add(transcript_id)
+
+def write_statistics_to_csv(stats_data, filename):
+    """Writes the final summary statistics to a CSV file."""
+    log_message(f"Writing final statistics to: {filename}")
+    try:
+        with open(filename, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(['Category', 'Count'])
+            for key, value in stats_data.items():
+                if key == 'Classification Summary':
+                    for classification, count in value.items():
+                        writer.writerow([f'Reads - {classification}', count])
+                else:
+                    writer.writerow([key, value])
+    except IOError as e:
+        log_message(f"Error writing statistics file: {e}", level="ERROR")
+
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~ Main Orchestrator ~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def main():
@@ -463,8 +453,9 @@ def main():
     parser.add_argument("--talon", action="store_true", help="Generate TALON-compatible output.")
     parser.add_argument("--chunk_size", type=int, default=5000, help="Reads per chunk.")
     parser.add_argument("--num_reads", type=int, default=None, help="Process first N reads.")
-    parser.add_argument("--min_intron_len", type=int, default=10, help="Min intron length.")
+    parser.add_argument("--min_intron_len", type=int, default=30, help="Min intron length.")
     parser.add_argument("--junc_tolerance", type=int, default=2, help="Tolerance for matching splice junctions (e.g., 2 for +/- 2 bp).")
+    parser.add_argument("--min_reads_for_novel", type=int, default=2, help="Minimum number of reads to support a novel gene or transcript (default: 2).")
     parser.add_argument("--debug_gene", type=str, default=None, help="Debug a single gene ID, writing output to a file.")
     parser.add_argument("--debug_novel_type", type=str, default=None, help="Output details for a specific novel class (e.g., NNC, NIC).")
     parser.add_argument("--debug_read", type=str, default=None, help="Debug all possible gene/transcript assignments for a given read ID.")
@@ -473,16 +464,14 @@ def main():
     args = parser.parse_args()
 
     start_time = time.time()
-    if args.debug_gene:
+    if args.debug_gene or args.debug_read:
         args.threads = 1
-        log_message(f"DEBUG MODE: Focusing on gene '{args.debug_gene}'. Forcing threads to 1.", level="DEBUG")
-
-    if args.debug_read:
-        args.threads = 1
-        log_message(f"DEBUG MODE: Focusing on read '{args.debug_read}'. Forcing threads to 1.", level="DEBUG")
+        log_message(f"DEBUG MODE active. Forcing threads to 1.", level="DEBUG")
 
     log_message(f"Starting annotation process with {args.threads} threads.")
-    log_message(f"Junction tolerance set to: +/- {args.junc_tolerance} bp.") # <<< CHANGED
+    log_message(f"Junction tolerance set to: +/- {args.junc_tolerance} bp.")
+    if args.min_reads_for_novel > 1:
+        log_message(f"Novel models require at least {args.min_reads_for_novel} supporting reads.")
     if args.num_reads:
         log_message(f"Processing only the first {args.num_reads:,} reads.")
     
@@ -491,7 +480,6 @@ def main():
     debug_gene_info = None
 
     if args.debug_gene:
-        # Debug logic is fine
         found = False
         for chrom, gene_dict in genes.items():
             if args.debug_gene in gene_dict:
@@ -507,18 +495,14 @@ def main():
 
     input_bam = pysam.AlignmentFile(args.bam, "rb")
     if args.out.lower().endswith('.bam'):
-        # If user provides a full .bam filename, use it
         sorted_bam_file = args.out
-        # And derive the prefix from it for other files
         output_prefix = os.path.splitext(sorted_bam_file)[0] 
     else:
-        # Otherwise, assume a prefix was given and build the name
         output_prefix = args.out
         sorted_bam_file = f"{output_prefix}.annotated.bam"
-
-    # The other files are now based on the derived prefix
     unsorted_bam_file = f"{output_prefix}.annot-unsorted.bam"
     qc_report_file = f"{output_prefix}_qc_summary.csv"
+    stats_file = f"{output_prefix}_final_stats.csv"
 
     log_message(f"Temporary unsorted BAM will be written to: {unsorted_bam_file}")
     output_bam = pysam.AlignmentFile(unsorted_bam_file, "wb", template=input_bam)
@@ -535,23 +519,12 @@ def main():
         args.debug_read, debug_read_log_list
     ))
 
-    abundance_counter = Counter()
-    classification_counter = Counter()
-    known_genes_found = {}
-    known_transcripts_found = {}
-    novel_transcripts = {}
-    novel_genes = {}
-    novel_gene_counter = 0
-    novel_transcript_counter = 0
-
     log_message("Submitting and processing reads...")
     main_process_header = pysam.AlignmentHeader.from_dict(header_dict)
     chunk_generator = read_bam_in_chunks(input_bam, args.chunk_size, args.num_reads, debug_region)
     total_reads_processed = 0
     next_progress_report = 100000
 
-    # Main processing loop has been simplified to not use multiprocessing Counters
-    # for better performance and simplicity, aggregation happens at the end.
     all_results = []
     for chunk_results in pool.imap_unordered(process_chunk, chunk_generator):
         all_results.extend(chunk_results)
@@ -559,44 +532,90 @@ def main():
         if not args.debug_gene and total_reads_processed >= next_progress_report:
             log_message(f"Processed {total_reads_processed:,} reads...")
             next_progress_report += 100000
-
     pool.close()
     pool.join()
     
-    log_message("Aggregating results and writing final BAM...")
-    for classification, gene_id, transcript_id, read_string in all_results:
+    log_message("Aggregating results and filtering novel models...")
+    
+    novel_gene_loci_counts = Counter()
+    novel_transcript_loci_counts = Counter()
+    
+    for _, prelim_gene_id, prelim_transcript_id, read_string in all_results:
         read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
         read_strand = '-' if read.is_reverse else '+'
-        final_gene_id, final_transcript_id = gene_id, transcript_id
-
-        if gene_id == "NOVELG":
+        
+        if prelim_gene_id == "NOVELG":
             gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            if gene_locus not in novel_genes:
-                novel_gene_counter += 1
-                novel_genes[gene_locus] = f"{args.novel_prefix}G{novel_gene_counter:06d}"
-            final_gene_id = novel_genes[gene_locus]
-        
-        read.set_tag("GX", final_gene_id)
-
-        # --- Ensure novel transcript IDs are shared for identical junctions ---
-        if transcript_id in ["NOVEL", "NOVELT"]:
+            novel_gene_loci_counts[gene_locus] += 1
+            
+        if prelim_transcript_id in ["NOVEL", "NOVELT"]:
             junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
-            transcript_locus = (final_gene_id, junctions, read_strand)
-            if transcript_locus not in novel_transcripts:
-                novel_transcript_counter += 1
-                new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
-                exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
-                novel_transcripts[transcript_locus] = {
-                    'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
-                    'strand': read_strand, 'exons': exons
-                }
-            final_transcript_id = novel_transcripts[transcript_locus]['id']
-        
-        read.set_tag("TX", final_transcript_id)
+            gene_id_for_tx = prelim_gene_id if prelim_gene_id != "NOVELG" else (read.reference_name, read.reference_start, read.reference_end, read_strand)
+            transcript_locus = (gene_id_for_tx, junctions, read_strand)
+            novel_transcript_loci_counts[transcript_locus] += 1
 
+    valid_novel_gene_loci = {locus for locus, count in novel_gene_loci_counts.items() if count >= args.min_reads_for_novel}
+    valid_novel_transcript_loci = {locus for locus, count in novel_transcript_loci_counts.items() if count >= args.min_reads_for_novel}
+
+    log_message(f"Identified {len(novel_gene_loci_counts)} potential novel gene loci; {len(valid_novel_gene_loci)} passed the {args.min_reads_for_novel}-read threshold.")
+    log_message(f"Identified {len(novel_transcript_loci_counts)} potential novel transcript structures; {len(valid_novel_transcript_loci)} passed the threshold.")
+    
+    log_message("Writing final annotated BAM file...")
+    abundance_counter = Counter()
+    classification_counter = Counter()
+    known_genes_found = {}
+    known_transcripts_found = {}
+    
+    novel_gene_locus_to_id = {}
+    novel_transcript_locus_to_id = {}
+    novel_models = {}
+    novel_gene_counter = 0
+    novel_transcript_counter = 0
+    solo_read_counter = 0
+
+    for classification, prelim_gene_id, prelim_transcript_id, read_string in all_results:
+        read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
+        read_strand = '-' if read.is_reverse else '+'
+        
+        final_gene_id = prelim_gene_id
+        final_transcript_id = prelim_transcript_id
+
+        if prelim_gene_id == "NOVELG":
+            gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
+            if gene_locus in valid_novel_gene_loci:
+                if gene_locus not in novel_gene_locus_to_id:
+                    novel_gene_counter += 1
+                    novel_gene_locus_to_id[gene_locus] = f"{args.novel_prefix}G{novel_gene_counter:06d}"
+                final_gene_id = novel_gene_locus_to_id[gene_locus]
+            else:
+                continue
+
+        if prelim_transcript_id in ["NOVEL", "NOVELT"]:
+            junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
+            gene_id_for_tx = final_gene_id if final_gene_id != "NOVELG" else (read.reference_name, read.reference_start, read.reference_end, read_strand)
+            transcript_locus = (gene_id_for_tx, junctions, read_strand)
+            
+            if transcript_locus in valid_novel_transcript_loci:
+                if transcript_locus not in novel_transcript_locus_to_id:
+                    novel_transcript_counter += 1
+                    new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
+                    novel_transcript_locus_to_id[transcript_locus] = new_id
+                    exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
+                    novel_models[transcript_locus] = {
+                        'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
+                        'strand': read_strand, 'exons': exons
+                    }
+                final_transcript_id = novel_transcript_locus_to_id[transcript_locus]
+            else:
+                final_transcript_id = "solo"
+                solo_read_counter += 1
+        
+        read.set_tag("TT", classification)
+        read.set_tag("GX", final_gene_id)
+        read.set_tag("TX", final_transcript_id)
         output_bam.write(read)
 
-        if gene_id != "NOVELG":
+        if prelim_gene_id != "NOVELG":
             known_genes_found[final_gene_id] = True
         if classification in ["Known", "ISM"]:
             known_transcripts_found[final_transcript_id] = True
@@ -608,7 +627,6 @@ def main():
     input_bam.close()
     output_bam.close()
     
-    # Debugging and report generation logic is fine, no changes needed
     if args.debug_gene and debug_gene_log_list:
         debug_filename = f"{output_prefix}_debug_gene_{args.debug_gene}.txt"
         log_message(f"Writing gene debug log to {debug_filename}")
@@ -640,31 +658,41 @@ def main():
     sort_and_index_bam(unsorted_bam_file, sorted_bam_file)
     
     if args.talon:
-        # <<< TALON CHANGE: Call the new function with the correct arguments
         sample_name = os.path.basename(output_prefix)
-        generate_talon_output(abundance_counter, transcript_info, novel_transcripts, gene_id_to_name, output_prefix, sample_name)
-        # Also re-generate the GTF, ensuring it's correct
+        generate_talon_output(abundance_counter, transcript_info, novel_models, gene_id_to_name, output_prefix, sample_name)
         talon_gtf_file = f"{output_prefix}_talon.gtf"
         log_message(f"Generating TALON GTF file: {talon_gtf_file}")
         with open(talon_gtf_file, 'w') as f_out:
             with open(args.gtf, 'r') as f_in:
                 f_out.write(f_in.read())
-            for model in novel_transcripts.values():
+            for model in novel_models.values():
                 attributes = f'gene_id "{model["gene_id"]}"; transcript_id "{model["id"]}";'
                 f_out.write(f"\n{model['chrom']}\tTALON\ttranscript\t{model['exons'][0][0]}\t{model['exons'][-1][1]}\t.\t{model['strand']}\t.\t{attributes}")
                 for i, exon in enumerate(model['exons'], 1):
                     f_out.write(f"\n{model['chrom']}\tTALON\texon\t{exon[0]}\t{exon[1]}\t.\t{model['strand']}\t.\t{attributes} exon_number \"{i}\";")
 
+    # --- Final Statistics Reporting ---
     log_message("--- Final Statistics ---")
-    log_message(f"Known genes detected: {len(known_genes_found)}")
-    log_message(f"Known transcripts detected: {len(known_transcripts_found)}")
-    log_message(f"Novel genes discovered: {len(novel_genes)}")
-    log_message(f"Novel transcripts discovered: {len(novel_transcripts)}")
+    stats_to_save = {
+        'Known genes detected': len(known_genes_found),
+        'Known transcripts detected': len(known_transcripts_found),
+        'Novel genes discovered': len(novel_gene_locus_to_id),
+        'Novel transcripts discovered': len(novel_transcript_locus_to_id),
+        'Reads tagged as solo (low support novel TX)': solo_read_counter,
+        'Classification Summary': dict(sorted(classification_counter.items()))
+    }
+    
+    for key, value in stats_to_save.items():
+        if key != 'Classification Summary':
+            log_message(f"{key}: {value:,}")
+            
     log_message("--- Read Classification Summary ---")
-    for classification_type in sorted(classification_counter.keys()):
-        count = classification_counter[classification_type]
+    for classification_type, count in stats_to_save['Classification Summary'].items():
         log_message(f"{classification_type}: {count:,} reads")
+    
     log_message("------------------------")
+    write_statistics_to_csv(stats_to_save, stats_file)
+
     end_time = time.time()
     log_message(f"Annotation complete. Final output file: {sorted_bam_file}")
     log_message(f"Total runtime: {end_time - start_time:.2f} seconds.")
