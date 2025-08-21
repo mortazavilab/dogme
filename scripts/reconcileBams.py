@@ -4,43 +4,48 @@ import os
 import sys
 import re
 from typing import Tuple, Dict, Set, List
+from collections import Counter
 import pysam
+import concurrent.futures
 
 # ==============================================================================
-# Novel / Known classification (unchanged)
+# GTF Parsing 
 # ==============================================================================
+def parse_gtf_for_ids_and_names(gtf_file: str) -> Tuple[Set[str], Set[str], Dict[str, str], Dict[str, str]]:
+    if not gtf_file or not os.path.exists(gtf_file):
+        print("[WARN] No valid annotation GTF provided...", file=sys.stderr)
+        return set(), set(), {}, {}
 
-DEFAULT_NOVEL_TT = {"nnc", "nic", "ism", "ism-j", "ism-n", "novel", "fusion"}
-KNOWN_TT_BLOCK = {"known", "antisense"}
+    print(f"=== Parsing reference annotation for known IDs and names: {os.path.basename(gtf_file)}... ===")
+    known_gene_ids, known_transcript_ids = set(), set()
+    gene_id_to_name, transcript_id_to_name = {}, {}
+    with open(gtf_file, 'r') as f:
+        for line in f:
+            if line.startswith('#'): continue
+            parts = line.strip().split('\t')
+            if len(parts) < 9: continue
+            attributes_str = parts[8]
+            gene_id_match = re.search(r'gene_id\s+"([^"]+)"', attributes_str)
+            tx_id_match = re.search(r'transcript_id\s+"([^"]+)"', attributes_str)
+            gene_name_match = re.search(r'gene_name\s+"([^"]+)"', attributes_str)
+            tx_name_match = re.search(r'transcript_name\s+"([^"]+)"', attributes_str)
+            if gene_id_match:
+                base_gene_id = gene_id_match.group(1).split('.')[0]
+                known_gene_ids.add(base_gene_id)
+                if gene_name_match and base_gene_id not in gene_id_to_name:
+                    gene_id_to_name[base_gene_id] = gene_name_match.group(1)
+            if tx_id_match:
+                base_tx_id = tx_id_match.group(1).split('.')[0]
+                known_transcript_ids.add(base_tx_id)
+                if tx_name_match and base_tx_id not in transcript_id_to_name:
+                    transcript_id_to_name[base_tx_id] = tx_name_match.group(1)
+    print(f"Found {len(known_gene_ids)} known gene IDs and {len(known_transcript_ids)} known transcript IDs.")
+    print(f"Found names for {len(gene_id_to_name)} genes and {len(transcript_id_to_name)} transcripts.")
+    return known_gene_ids, known_transcript_ids, gene_id_to_name, transcript_id_to_name
 
-KNOWN_TX_RE = re.compile(r"^(ENST|ENSG|NM_|NR_)", re.IGNORECASE)
-NOVEL_TX_RE_STRICT = re.compile(r"^NOVEL", re.IGNORECASE)
-ALREADY_UNIFIED_TXRE = re.compile(r"^CONST_|^TALONT_", re.IGNORECASE)
-ALREADY_UNIFIED_GXRE = re.compile(r"^CONSG_|^TALONG_", re.IGNORECASE)
-
-def parse_novel_tt(arg: str) -> Set[str]:
-    if not arg:
-        return set(DEFAULT_NOVEL_TT)
-    return {x.strip().lower() for x in arg.split(",") if x.strip()}
-
-def is_novel_read(r: pysam.AlignedSegment, novel_tt_set: Set[str]) -> bool:
-    if r.has_tag("TX") and ALREADY_UNIFIED_TXRE.match(str(r.get_tag("TX"))):
-        return False
-    if r.has_tag("GX") and ALREADY_UNIFIED_GXRE.match(str(r.get_tag("GX"))):
-        return False
-    if r.has_tag("TX") and KNOWN_TX_RE.match(str(r.get_tag("TX"))):
-        return False
-    if r.has_tag("TT"):
-        tt = str(r.get_tag("TT")).strip().lower()
-        if tt in KNOWN_TT_BLOCK:
-            return False
-        return tt in novel_tt_set
-    if r.has_tag("TX") and NOVEL_TX_RE_STRICT.match(str(r.get_tag("TX"))):
-        return True
-    if r.has_tag("GX") and str(r.get_tag("GX")).strip().lower().startswith("novel"):
-        return True
-    return False
-
+# ==============================================================================
+# Splicing and Exon Definitions 
+# ==============================================================================
 def splice_key(read: pysam.AlignedSegment) -> Tuple[str, str, Tuple[str, ...]]:
     chrom = read.reference_name
     strand = '-' if read.is_reverse else '+'
@@ -59,156 +64,257 @@ def get_exon_blocks(read: pysam.AlignedSegment) -> List[Tuple[int, int]]:
     return read.get_blocks()
 
 # ==============================================================================
-# MODIFIED SECTION
+# Multithreading Logic 
 # ==============================================================================
-
 def get_unique_sample_name(path: str, all_paths: List[str]) -> str:
-    """Creates a unique, clean sample name from a file path."""
     name = os.path.basename(path).replace(".bam", "")
-    # If basenames are not unique, prepend the parent directory name
     basenames = [os.path.basename(p) for p in all_paths]
     if basenames.count(os.path.basename(path)) > 1:
         parent_dir = os.path.basename(os.path.dirname(path))
         name = f"{parent_dir}_{name}"
     return name
 
-def collect_and_assign_ids(
-    bam_files: List[str],
-    sample_names: Dict[str, str], # Pass in the unique names
-    id_tag: str,
-    gene_tag: str,
-    gene_prefix: str,
-    tx_prefix: str,
-    novel_tt_set: Set[str]
-) -> Tuple[Dict, Dict, Dict]:
-    master_structures = {}
-    old_tx_to_struct = {}
-    gene_counter, transcript_counter = 1, 1
-
-    for bam_path in bam_files:
-        unique_name = sample_names[bam_path] # Use the pre-generated unique name
-        with pysam.AlignmentFile(bam_path, "rb") as bam:
-            for r in bam:
-                if r.is_unmapped or not r.cigartuples: continue
-                key = splice_key(r)
-                if r.has_tag(id_tag):
-                    old_tx_to_struct[str(r.get_tag(id_tag))] = key
-                if key not in master_structures:
-                    master_structures[key] = {
-                        "gene_id": None, "transcript_id": None,
-                        "is_novel": True,
-                        "exon_blocks": get_exon_blocks(r),
-                        # Initialize counts for all unique sample names
-                        "read_counts": {s_name: 0 for s_name in sample_names.values()}
+def _collect_reads_worker(bam_path: str, id_tag: str, gene_tag: str) -> Dict:
+    local_reads = {}
+    with pysam.AlignmentFile(bam_path, "rb") as bam:
+        for r in bam:
+            if r.is_unmapped or not r.cigartuples or len(r.cigartuples) < 3: continue
+            key = splice_key(r)
+            if not key[2]: continue
+            if key not in local_reads:
+                local_reads[key] = {
+                    "lengths": [],
+                    "rep_read": {
+                        "tx_id": str(r.get_tag(id_tag)) if r.has_tag(id_tag) else None,
+                        "gx_id": str(r.get_tag(gene_tag)) if r.has_tag(gene_tag) else None,
+                        "tt_tag": str(r.get_tag('TT')) if r.has_tag('TT') else "Novel",
+                        "exon_blocks": get_exon_blocks(r)
                     }
-                # Update read count for the current UNIQUE sample
-                master_structures[key]["read_counts"][unique_name] += 1
-                if not is_novel_read(r, novel_tt_set):
-                    if master_structures[key]["is_novel"]:
-                        master_structures[key]["is_novel"] = False
-                        master_structures[key]["gene_id"] = str(r.get_tag(gene_tag)) if r.has_tag(gene_tag) else "UnknownGene"
-                        master_structures[key]["transcript_id"] = str(r.get_tag(id_tag)) if r.has_tag(id_tag) else "UnknownTranscript"
+                }
+            local_reads[key]["lengths"].append(r.query_alignment_length)
+    return (bam_path, local_reads)
 
-    for struct, data in master_structures.items():
-        if data["is_novel"]:
-            data["gene_id"] = f"{gene_prefix}{gene_counter}"
+def collect_and_assign_ids(
+    bam_files: List[str], sample_names: Dict[str, str], known_gene_ids: Set[str],
+    known_tx_ids: Set[str], id_tag: str, gene_tag: str, gene_prefix: str,
+    tx_prefix: str, threads: int
+) -> Dict:
+    all_unique_samples = list(sample_names.values())
+    master_structures = {}
+
+    with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
+        future_to_bam = {executor.submit(_collect_reads_worker, bam_path, id_tag, gene_tag): bam_path for bam_path in bam_files}
+        for future in concurrent.futures.as_completed(future_to_bam):
+            try:
+                bam_path, local_reads = future.result()
+                unique_name = sample_names[bam_path]
+                for key, data in local_reads.items():
+                    if key not in master_structures:
+                        master_structures[key] = {"read_counts": {s: 0 for s in all_unique_samples}, "rep_read": data["rep_read"], "lengths": []}
+                    master_structures[key]["read_counts"][unique_name] += len(data["lengths"])
+                    master_structures[key]["lengths"].extend(data["lengths"])
+            except Exception as exc:
+                print(f"{future_to_bam[future]} generated an exception: {exc}", file=sys.stderr)
+
+    gene_counter, transcript_counter = 1, 1
+    for data in master_structures.values():
+        rep = data["rep_read"]
+        if data["lengths"]: data["transcript_length"] = round(sum(data["lengths"]) / len(data["lengths"]))
+        else: data["transcript_length"] = 0
+        data["exon_blocks"] = rep["exon_blocks"]
+        tt_tag = rep.get("tt_tag", "Novel").upper()
+        data["tt_tag"] = tt_tag
+        read_tx_id = rep["tx_id"]
+        read_gene_id = rep["gx_id"]
+
+        if tt_tag in ("KNOWN", "ISM"):
+            data["transcript_id"] = read_tx_id
+            data["gene_id"] = read_gene_id
+            data["is_novel_gene"] = False
+            data["is_novel_transcript"] = (tt_tag == "ISM")
+        else:
+            data["is_novel_transcript"] = True
+            if read_gene_id and read_gene_id in known_gene_ids:
+                data["gene_id"] = read_gene_id
+                data["is_novel_gene"] = False
+            else:
+                data["gene_id"] = None
+                data["is_novel_gene"] = True
+            if sum(data["read_counts"].values()) == 1:
+                data["transcript_id"] = "solo"
+            else:
+                data["transcript_id"] = None
+
+    for data in master_structures.values():
+        if data["transcript_id"] is None:
             data["transcript_id"] = f"{tx_prefix}{transcript_counter}"
-            gene_counter += 1
             transcript_counter += 1
-
-    struct_to_new_id = {k: (v["gene_id"], v["transcript_id"]) for k, v in master_structures.items()}
-    return master_structures, struct_to_new_id, old_tx_to_struct
+        if data["gene_id"] is None:
+            data["gene_id"] = f"{gene_prefix}{gene_counter}"
+            gene_counter += 1
+    return master_structures
 
 # ==============================================================================
-# Unchanged sections...
+# ISM Consolidation Logic
 # ==============================================================================
+def consolidate_transcript_variants(raw_structures: Dict) -> Tuple[Dict, Dict]:
+    """
+    Consolidates multiple variants of the same transcript ID based on TT tag.
+    All 'ISM' variants for a given ID are merged into one.
+    All 'Known' variants for a given ID are merged into one.
+    """
+    final_structures = {}
+    key_remap = {}  # Maps a merged-away splice_key -> representative splice_key
+    # Key: (transcript_id, tt_tag), Value: representative splice_key
+    representatives = {}
 
-def rewrite_bam(in_bam: str, out_bam: str, tx_map: Dict, struct_map: Dict, id_tag: str, gene_tag: str, novel_tt_set: Set[str]) -> None:
-    changed_count = 0; total_count = 0
+    for splice_key, data in raw_structures.items():
+        tt_tag = data.get("tt_tag")
+        tx_id = data.get("transcript_id")
+
+        # Only consolidate KNOWN and ISM variants. Other types are unique by structure.
+        if tt_tag in ("KNOWN", "ISM"):
+            group_key = (tx_id, tt_tag)
+            if group_key not in representatives:
+                # First time seeing this combo (e.g., first ISM for ENST100). It becomes the representative.
+                representatives[group_key] = splice_key
+                final_structures[splice_key] = data
+            else:
+                # Merge this variant into its group representative.
+                rep_key = representatives[group_key]
+                # Check if the representative key is the same as the current key
+                if rep_key != splice_key:
+                    for sample, count in data["read_counts"].items():
+                        final_structures[rep_key]["read_counts"][sample] += count
+                    final_structures[rep_key]["lengths"].extend(data["lengths"])
+                    key_remap[splice_key] = rep_key
+        else:
+            # This is a NIC, NNC, solo, etc. Keep it as a unique entry.
+            final_structures[splice_key] = data
+            
+    # Recalculate mean length for the merged groups
+    for rep_key in representatives.values():
+        if rep_key in final_structures:
+            lengths = final_structures[rep_key]["lengths"]
+            if lengths:
+                final_structures[rep_key]["transcript_length"] = round(sum(lengths) / len(lengths))
+
+    print(f"Consolidated {len(key_remap)} redundant KNOWN/ISM structures into representative entries.")
+    return final_structures, key_remap
+
+# ==============================================================================
+# Rewriting and Output Generation
+# ==============================================================================
+def rewrite_bam(in_bam: str, out_bam: str, struct_to_new_id: Dict, id_tag: str, gene_tag: str) -> None:
+    changed_count, total_count = 0, 0
+    mappings = set()
     with pysam.AlignmentFile(in_bam, "rb") as ib, pysam.AlignmentFile(out_bam, "wb", header=ib.header) as ob:
         for r in ib:
             total_count += 1
-            if not is_novel_read(r, novel_tt_set):
-                ob.write(r)
-                continue
-            new_gx, new_tx = None, None
-            if r.has_tag(id_tag):
-                tx_id = str(r.get_tag(id_tag))
-                if tx_id in tx_map: new_gx, new_tx = tx_map[tx_id]
-            if new_gx is None:
-                struct = splice_key(r)
-                if struct in struct_map: new_gx, new_tx = struct_map[struct]
-            if new_gx and new_tx:
-                r.set_tag(gene_tag, new_gx, value_type='Z')
-                r.set_tag(id_tag, new_tx, value_type='Z')
-                changed_count += 1
+            key = splice_key(r)
+            if key in struct_to_new_id:
+                new_gx, new_tx = struct_to_new_id[key]
+                current_tx = str(r.get_tag(id_tag)) if r.has_tag(id_tag) else "NA"
+                current_gx = str(r.get_tag(gene_tag)) if r.has_tag(gene_tag) else "NA"
+                if new_tx != current_tx or new_gx != current_gx:
+                    if new_gx: r.set_tag(gene_tag, new_gx, value_type='Z')
+                    if new_tx: r.set_tag(id_tag, new_tx, value_type='Z')
+                    changed_count += 1
+                    if new_tx != current_tx:
+                        mappings.add((current_tx, new_tx))
             ob.write(r)
+    mapping_file_path = out_bam.replace(".reconciled.bam", ".mapping.tsv")
+    with open(mapping_file_path, "w") as f_map:
+        f_map.write("original_tx_id\tfinal_tx_id\n")
+        for orig_id, final_id in sorted(list(mappings)):
+            f_map.write(f"{orig_id}\t{final_id}\n")
     try: pysam.index(out_bam)
     except Exception as e: print(f"[WARN] Could not index {out_bam}: {e}", file=sys.stderr)
-    print(f"  - Rewrote {os.path.basename(in_bam)}: changed IDs for {changed_count} / {total_count} reads.")
+    print(f"  - Finished rewriting {os.path.basename(in_bam)}: changed IDs for {changed_count} / {total_count} reads. Mapping file created.")
 
 def main():
-    ap = argparse.ArgumentParser(description="Generate TALON-compatible files and reconciled BAMs, preserving known annotations.")
+    ap = argparse.ArgumentParser(description="Generate TALON-compatible files.")
     ap.add_argument("--bams", required=True, nargs='+', help="List of input BAM files.")
+    ap.add_argument("--annotation", required=True, help="Reference annotation GTF file.")
     ap.add_argument("--out_prefix", required=True, help="Prefix for GTF and abundance files.")
     ap.add_argument("--outdir", required=True, help="Directory to save all output files.")
-    ap.add_argument("--gene_prefix", default="TALONG_", help="Consolidated novel gene ID prefix.")
-    ap.add_argument("--tx_prefix", default="TALONT_", help="Consolidated novel transcript ID prefix.")
+    ap.add_argument("--gene_prefix", default="CONSG_", help="Consolidated novel gene ID prefix.")
+    ap.add_argument("--tx_prefix", default="CONST_", help="Consolidated novel transcript ID prefix.")
     ap.add_argument("--id_tag", default="TX", help="BAM tag for transcript ID.")
     ap.add_argument("--gene_tag", default="GX", help="BAM tag for gene ID.")
+    ap.add_argument("--threads", type=int, default=os.cpu_count(), help="Number of threads to use.")
     args = ap.parse_args()
 
     os.makedirs(args.outdir, exist_ok=True)
-    novel_tt_set = parse_novel_tt("")
-
-    # === MODIFIED SECTION: Create unique names upfront ===
+    known_gene_ids, known_tx_ids, gene_id_to_name, transcript_id_to_name = parse_gtf_for_ids_and_names(args.annotation)
     sample_names_map = {path: get_unique_sample_name(path, args.bams) for path in args.bams}
-    unique_sample_names = list(sample_names_map.values())
 
-    print("=== Step 1 & 2: Collecting structures and assigning IDs... ===")
-    all_data, struct_to_new_id, old_tx_to_struct = collect_and_assign_ids(
-        args.bams, sample_names_map, args.id_tag, args.gene_tag, args.gene_prefix, args.tx_prefix, novel_tt_set
+    print(f"\n=== Step 1: Collecting structures and assigning IDs (using {args.threads} threads)... ===")
+    raw_data = collect_and_assign_ids(
+        args.bams, sample_names_map, known_gene_ids, known_tx_ids,
+        args.id_tag, args.gene_tag, args.gene_prefix, args.tx_prefix, args.threads
     )
-    print(f"Processed {len(all_data)} unique transcript structures across {len(args.bams)} samples.")
+    print(f"Initially processed {len(raw_data)} unique transcript structures.")
 
-    old_tx_to_new_id = {tx: struct_to_new_id.get(struct) for tx, struct in old_tx_to_struct.items() if struct_to_new_id.get(struct)}
-    print(f"Mapped {len(old_tx_to_new_id)} original transcript IDs to final IDs.")
+    print("\n=== Step 1.5: Consolidating KNOWN/ISM variants... ===")
+    final_data, key_remap = consolidate_transcript_variants(raw_data)
+    print(f"Final dataset contains {len(final_data)} unique transcripts after consolidation.")
 
-    print("\n=== Step 3: Rewriting BAM files (novel reads only)... ===")
-    for bam_file in args.bams:
-        base_name = os.path.basename(bam_file)
-        out_bam_path = os.path.join(args.outdir, f"{os.path.splitext(base_name)[0]}.reconciled.bam")
-        rewrite_bam(bam_file, out_bam_path, old_tx_to_new_id, struct_to_new_id, args.id_tag, args.gene_tag, novel_tt_set)
+    print("\n=== Summary of Findings ===")
+    category_counts = Counter(data.get('tt_tag', 'UNKNOWN') for data in final_data.values() if data.get('transcript_id') != 'solo')
+    solo_count = sum(1 for data in final_data.values() if data.get('transcript_id') == 'solo')
+    
+    for category, count in sorted(category_counts.items()):
+        print(f"  - {category.capitalize()} transcripts:{' ':<27} {count}")
+    if solo_count > 0:
+        print(f"  - {'Single-read solo transcripts (will be filtered):':<45} {solo_count}")
 
-    print("\n=== Step 4: Generating TALON files... ===")
+    struct_to_new_id = {k: (v["gene_id"], v["transcript_id"]) for k, v in final_data.items()}
+    for merged_key, representative_key in key_remap.items():
+        if representative_key in struct_to_new_id:
+            struct_to_new_id[merged_key] = struct_to_new_id[representative_key]
+
+    print(f"\n=== Step 2: Rewriting BAM files (using {args.threads} threads)... ===")
+    with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
+        futures = [executor.submit(
+            rewrite_bam, bam_file, os.path.join(args.outdir, f"{os.path.splitext(os.path.basename(bam_file))[0]}.reconciled.bam"),
+            struct_to_new_id, args.id_tag, args.gene_tag
+        ) for bam_file in args.bams]
+        concurrent.futures.wait(futures)
+
+    print("\n=== Step 3: Generating TALON files... ===")
     gtf_file = os.path.join(args.outdir, f"{args.out_prefix}.gtf")
+    abundance_file = os.path.join(args.outdir, f"{args.out_prefix}_abundance.tsv")
+    output_data = {k: v for k, v in final_data.items() if v["transcript_id"] != "solo"}
+    print(f"Writing {len(output_data)} unique transcripts to output files.")
+
     with open(gtf_file, 'w') as f:
-        for struct, data in all_data.items():
+        for struct, data in output_data.items():
             gene_id, tx_id = data["gene_id"], data["transcript_id"]
             chrom, strand, _ = struct
             min_start = min(block[0] for block in data["exon_blocks"]) + 1
             max_end = max(block[1] for block in data["exon_blocks"])
             attributes = f'gene_id "{gene_id}"; transcript_id "{tx_id}";'
             f.write(f"{chrom}\tTALON\ttranscript\t{min_start}\t{max_end}\t.\t{strand}\t.\t{attributes}\n")
-            for exon_start, exon_end in data["exon_blocks"]:
+            for exon_start, exon_end in sorted(data["exon_blocks"], key=lambda x: x[0]):
                 f.write(f"{chrom}\tTALON\texon\t{exon_start + 1}\t{exon_end}\t.\t{strand}\t.\t{attributes}\n")
 
-    abundance_file = os.path.join(args.outdir, f"{args.out_prefix}_abundance.tsv")
     with open(abundance_file, 'w') as f:
-        # Use the unique_sample_names list for the header
+        unique_sample_names = list(sample_names_map.values())
         header = ["gene_ID", "transcript_ID", "annot_gene_id", "annot_transcript_id",
                   "annot_gene_name", "annot_transcript_name", "n_exons",
                   "transcript_length", "gene_novelty", "transcript_novelty",
                   "ISM_subtype"] + unique_sample_names
         f.write('\t'.join(header) + '\n')
-
-        for struct, data in all_data.items():
+        for struct, data in output_data.items():
             gene_id, tx_id = data["gene_id"], data["transcript_id"]
-            novelty_str = "Novel" if data["is_novel"] else "Known"
-            annot_gene_id = "NA" if data["is_novel"] else gene_id
-            annot_tx_id = "NA" if data["is_novel"] else tx_id
-            row = [gene_id, tx_id, annot_gene_id, annot_tx_id, "NA", "NA", str(len(data['exon_blocks'])), "NA", novelty_str, novelty_str, "NA"]
-            # Loop through the unique names to get the correct counts
+            annot_gene_id, annot_tx_id = gene_id, tx_id
+            gene_novelty_str = "Known" if not data["is_novel_gene"] else "Novel"
+            tx_novelty_str = data.get("tt_tag", "Novel")
+            tx_len = str(data.get("transcript_length", "NA"))
+            gene_name = gene_id_to_name.get(gene_id, "NA")
+            tx_name = transcript_id_to_name.get(tx_id, "NA")
+            row = [gene_id, tx_id, annot_gene_id, annot_tx_id, gene_name, tx_name, str(len(data['exon_blocks'])), tx_len, gene_novelty_str, tx_novelty_str, "NA"]
             for s_name in unique_sample_names:
                 row.append(str(data["read_counts"].get(s_name, 0)))
             f.write('\t'.join(row) + '\n')
