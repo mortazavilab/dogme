@@ -8,7 +8,7 @@ from collections import Counter
 import pysam
 import concurrent.futures
 
-__version__ = "1.0.2"
+__version__ = "1.0.3"
 
 # ==============================================================================
 # GTF Parsing 
@@ -210,21 +210,41 @@ def consolidate_transcript_variants(raw_structures: Dict) -> Tuple[Dict, Dict]:
 def rewrite_bam(in_bam: str, out_bam: str, struct_to_new_id: Dict, id_tag: str, gene_tag: str) -> None:
     changed_count, total_count = 0, 0
     mappings = set()
-    with pysam.AlignmentFile(in_bam, "rb") as ib, pysam.AlignmentFile(out_bam, "wb", header=ib.header) as ob:
-        for r in ib:
-            total_count += 1
-            key = splice_key(r)
-            if key in struct_to_new_id:
-                new_gx, new_tx = struct_to_new_id[key]
-                current_tx = str(r.get_tag(id_tag)) if r.has_tag(id_tag) else "NA"
-                current_gx = str(r.get_tag(gene_tag)) if r.has_tag(gene_tag) else "NA"
-                if new_tx != current_tx or new_gx != current_gx:
-                    if new_gx: r.set_tag(gene_tag, new_gx, value_type='Z')
-                    if new_tx: r.set_tag(id_tag, new_tx, value_type='Z')
-                    changed_count += 1
-                    if new_tx != current_tx:
-                        mappings.add((current_tx, new_tx))
-            ob.write(r)
+    # Read input BAM and header
+    with pysam.AlignmentFile(in_bam, "rb") as ib:
+        header = ib.header.to_dict()
+        # --- Add/merge PG (program) and CO (comment) lines for provenance ---
+        # Copy existing PG/CO lines if present
+        pg_lines = header.get('PG', [])
+        co_lines = header.get('CO', [])
+        # Add a new PG line for this program
+        new_pg = {
+            'ID': 'reconcileBams',
+            'PN': 'reconcileBams.py',
+            'VN': __version__,
+            'CL': ' '.join(sys.argv)
+        }
+        pg_lines.append(new_pg)
+        header['PG'] = pg_lines
+        # Add a comment line for this run
+        co_lines.append(f"reconcileBams.py version {__version__} command: {' '.join(sys.argv)}")
+        header['CO'] = co_lines
+
+        with pysam.AlignmentFile(out_bam, "wb", header=header) as ob:
+            for r in ib:
+                total_count += 1
+                key = splice_key(r)
+                if key in struct_to_new_id:
+                    new_gx, new_tx = struct_to_new_id[key]
+                    current_tx = str(r.get_tag(id_tag)) if r.has_tag(id_tag) else "NA"
+                    current_gx = str(r.get_tag(gene_tag)) if r.has_tag(gene_tag) else "NA"
+                    if new_tx != current_tx or new_gx != current_gx:
+                        if new_gx: r.set_tag(gene_tag, new_gx, value_type='Z')
+                        if new_tx: r.set_tag(id_tag, new_tx, value_type='Z')
+                        changed_count += 1
+                        if new_tx != current_tx:
+                            mappings.add((current_tx, new_tx))
+                ob.write(r)
     mapping_file_path = out_bam.replace(".reconciled.bam", ".mapping.tsv")
     with open(mapping_file_path, "w") as f_map:
         f_map.write("original_tx_id\tfinal_tx_id\n")
