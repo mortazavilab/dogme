@@ -8,6 +8,8 @@ from collections import Counter
 import pysam
 import concurrent.futures
 
+__version__ = "1.0.2"
+
 # ==============================================================================
 # GTF Parsing 
 # ==============================================================================
@@ -238,12 +240,14 @@ def main():
     ap.add_argument("--annotation", required=True, help="Reference annotation GTF file.")
     ap.add_argument("--out_prefix", required=True, help="Prefix for GTF and abundance files.")
     ap.add_argument("--outdir", required=True, help="Directory to save all output files.")
-    ap.add_argument("--gene_prefix", default="CONSG_", help="Consolidated novel gene ID prefix.")
-    ap.add_argument("--tx_prefix", default="CONST_", help="Consolidated novel transcript ID prefix.")
+    ap.add_argument("--gene_prefix", default="CONSG", help="Consolidated novel gene ID prefix.")
+    ap.add_argument("--tx_prefix", default="CONST", help="Consolidated novel transcript ID prefix.")
     ap.add_argument("--id_tag", default="TX", help="BAM tag for transcript ID.")
     ap.add_argument("--gene_tag", default="GX", help="BAM tag for gene ID.")
     ap.add_argument("--threads", type=int, default=os.cpu_count(), help="Number of threads to use.")
     args = ap.parse_args()
+
+    print(f"reconcileBams.py version {__version__}")
 
     os.makedirs(args.outdir, exist_ok=True)
     known_gene_ids, known_tx_ids, gene_id_to_name, transcript_id_to_name = parse_gtf_for_ids_and_names(args.annotation)
@@ -260,14 +264,47 @@ def main():
     final_data, key_remap = consolidate_transcript_variants(raw_data)
     print(f"Final dataset contains {len(final_data)} unique transcripts after consolidation.")
 
+    # --- Summary of Findings ---
     print("\n=== Summary of Findings ===")
+    summary_lines = []
     category_counts = Counter(data.get('tt_tag', 'UNKNOWN') for data in final_data.values() if data.get('transcript_id') != 'solo')
     solo_count = sum(1 for data in final_data.values() if data.get('transcript_id') == 'solo')
-    
+
+    # Only count truly novel transcript IDs (not ISM/KNOWN) for summary
+    novel_transcript_ids = set()
+    for data in final_data.values():
+        tt = data.get('tt_tag', '').upper()
+        tid = data.get('transcript_id')
+        if data.get('is_novel_transcript', False) and tid and tid != 'solo' and tt not in ("KNOWN", "ISM"):
+            novel_transcript_ids.add(tid)
+    # Count novel gene IDs as before
+    novel_gene_ids = set()
+    for data in final_data.values():
+        if data.get('is_novel_gene', False) and data.get('gene_id'):
+            novel_gene_ids.add(data['gene_id'])
+
     for category, count in sorted(category_counts.items()):
-        print(f"  - {category.capitalize()} transcripts:{' ':<27} {count}")
+        line = f"  - {category.capitalize()} transcripts:{' ':<27} {count}"
+        print(line)
+        summary_lines.append(line)
     if solo_count > 0:
-        print(f"  - {'Single-read solo transcripts (will be filtered):':<45} {solo_count}")
+        line = f"  - {'Single-read solo transcripts (will be filtered):':<45} {solo_count}"
+        print(line)
+        summary_lines.append(line)
+    line = f"  - Number of genes with {args.gene_prefix} IDs: {len(novel_gene_ids)}"
+    print(line)
+    summary_lines.append(line)
+    line = f"  - Number of transcripts with {args.tx_prefix} IDs: {len(novel_transcript_ids)}"
+    print(line)
+    summary_lines.append(line)
+
+    # Write summary to report file
+    report_file = os.path.join(args.outdir, f"{args.out_prefix}_summary.txt")
+    with open(report_file, "w") as f:
+        f.write(f"reconcileBams.py version {__version__}\n")
+        f.write("=== Summary of Findings ===\n")
+        for line in summary_lines:
+            f.write(line + "\n")
 
     struct_to_new_id = {k: (v["gene_id"], v["transcript_id"]) for k, v in final_data.items()}
     for merged_key, representative_key in key_remap.items():
