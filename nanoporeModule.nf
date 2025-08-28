@@ -64,7 +64,7 @@ process doradoDownloadTask {
 }
 
 process doradoTask {
-    errorStrategy 'ignore'    
+    errorStrategy { task.attempt < 4 ? 'retry' : 'ignore' }    
     input:
     path inputFile
     val modDirIgnore
