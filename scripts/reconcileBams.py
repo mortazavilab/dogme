@@ -8,19 +8,21 @@ from collections import Counter
 import pysam
 import concurrent.futures
 
-__version__ = "1.0.3"
+__version__ = "1.0.4"
 
 # ==============================================================================
-# GTF Parsing 
+# GTF Parsing
 # ==============================================================================
-def parse_gtf_for_ids_and_names(gtf_file: str) -> Tuple[Set[str], Set[str], Dict[str, str], Dict[str, str]]:
+def parse_gtf_for_ids_and_names(gtf_file: str) -> Tuple[Set[str], Set[str], Dict[str, str], Dict[str, str], Dict[str, List[str]], Dict[str, List[Tuple[int, int]]]]:
     if not gtf_file or not os.path.exists(gtf_file):
         print("[WARN] No valid annotation GTF provided...", file=sys.stderr)
-        return set(), set(), {}, {}
+        return set(), set(), {}, {}, {}, {}
 
     print(f"=== Parsing reference annotation for known IDs and names: {os.path.basename(gtf_file)}... ===")
     known_gene_ids, known_transcript_ids = set(), set()
     gene_id_to_name, transcript_id_to_name = {}, {}
+    transcript_gtf_lines = {}
+    transcript_exon_blocks = {}
     with open(gtf_file, 'r') as f:
         for line in f:
             if line.startswith('#'): continue
@@ -41,12 +43,23 @@ def parse_gtf_for_ids_and_names(gtf_file: str) -> Tuple[Set[str], Set[str], Dict
                 known_transcript_ids.add(base_tx_id)
                 if tx_name_match and base_tx_id not in transcript_id_to_name:
                     transcript_id_to_name[base_tx_id] = tx_name_match.group(1)
+                # Store all lines for this transcript
+                if base_tx_id not in transcript_gtf_lines:
+                    transcript_gtf_lines[base_tx_id] = []
+                transcript_gtf_lines[base_tx_id].append(line.rstrip('\n'))
+                # Collect exon blocks for this transcript
+                if parts[2] == "exon":
+                    start = int(parts[3]) - 1
+                    end = int(parts[4])
+                    if base_tx_id not in transcript_exon_blocks:
+                        transcript_exon_blocks[base_tx_id] = []
+                    transcript_exon_blocks[base_tx_id].append((start, end))
     print(f"Found {len(known_gene_ids)} known gene IDs and {len(known_transcript_ids)} known transcript IDs.")
     print(f"Found names for {len(gene_id_to_name)} genes and {len(transcript_id_to_name)} transcripts.")
-    return known_gene_ids, known_transcript_ids, gene_id_to_name, transcript_id_to_name
+    return known_gene_ids, known_transcript_ids, gene_id_to_name, transcript_id_to_name, transcript_gtf_lines, transcript_exon_blocks
 
 # ==============================================================================
-# Splicing and Exon Definitions 
+# Splicing and Exon Definitions
 # ==============================================================================
 def splice_key(read: pysam.AlignedSegment) -> Tuple[str, str, Tuple[str, ...]]:
     chrom = read.reference_name
@@ -62,11 +75,24 @@ def splice_key(read: pysam.AlignedSegment) -> Tuple[str, str, Tuple[str, ...]]:
                 ref_pos += length
     return (chrom, strand, tuple(sorted(juncs)))
 
-def get_exon_blocks(read: pysam.AlignedSegment) -> List[Tuple[int, int]]:
-    return read.get_blocks()
+def get_exon_blocks(read: pysam.AlignedSegment, merge_distance: int = 5) -> List[Tuple[int, int]]:
+    """
+    Returns a list of exon blocks for the read, merging blocks that are <= merge_distance apart.
+    """
+    blocks = read.get_blocks()
+    if not blocks:
+        return []
+    merged = [list(blocks[0])]
+    for start, end in blocks[1:]:
+        prev_end = merged[-1][1]
+        if start - prev_end <= merge_distance:
+            merged[-1][1] = end
+        else:
+            merged.append([start, end])
+    return [tuple(b) for b in merged]
 
 # ==============================================================================
-# Multithreading Logic 
+# Multithreading Logic
 # ==============================================================================
 def get_unique_sample_name(path: str, all_paths: List[str]) -> str:
     name = os.path.basename(path).replace(".bam", "")
@@ -76,7 +102,7 @@ def get_unique_sample_name(path: str, all_paths: List[str]) -> str:
         name = f"{parent_dir}_{name}"
     return name
 
-def _collect_reads_worker(bam_path: str, id_tag: str, gene_tag: str) -> Dict:
+def _collect_reads_worker(bam_path: str, id_tag: str, gene_tag: str, merge_distance: int) -> Dict:
     local_reads = {}
     with pysam.AlignmentFile(bam_path, "rb") as bam:
         for r in bam:
@@ -90,7 +116,7 @@ def _collect_reads_worker(bam_path: str, id_tag: str, gene_tag: str) -> Dict:
                         "tx_id": str(r.get_tag(id_tag)) if r.has_tag(id_tag) else None,
                         "gx_id": str(r.get_tag(gene_tag)) if r.has_tag(gene_tag) else None,
                         "tt_tag": str(r.get_tag('TT')) if r.has_tag('TT') else "Novel",
-                        "exon_blocks": get_exon_blocks(r)
+                        "exon_blocks": get_exon_blocks(r, merge_distance)
                     }
                 }
             local_reads[key]["lengths"].append(r.query_alignment_length)
@@ -99,13 +125,16 @@ def _collect_reads_worker(bam_path: str, id_tag: str, gene_tag: str) -> Dict:
 def collect_and_assign_ids(
     bam_files: List[str], sample_names: Dict[str, str], known_gene_ids: Set[str],
     known_tx_ids: Set[str], id_tag: str, gene_tag: str, gene_prefix: str,
-    tx_prefix: str, threads: int
+    tx_prefix: str, threads: int, merge_distance: int
 ) -> Dict:
     all_unique_samples = list(sample_names.values())
     master_structures = {}
 
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
-        future_to_bam = {executor.submit(_collect_reads_worker, bam_path, id_tag, gene_tag): bam_path for bam_path in bam_files}
+        future_to_bam = {
+            executor.submit(_collect_reads_worker, bam_path, id_tag, gene_tag, merge_distance): bam_path
+            for bam_path in bam_files
+        }
         for future in concurrent.futures.as_completed(future_to_bam):
             try:
                 bam_path, local_reads = future.result()
@@ -159,47 +188,64 @@ def collect_and_assign_ids(
 # ==============================================================================
 # ISM Consolidation Logic
 # ==============================================================================
-def consolidate_transcript_variants(raw_structures: Dict) -> Tuple[Dict, Dict]:
+def consolidate_transcript_variants(raw_structures: Dict, transcript_exon_blocks: Dict[str, List[Tuple[int, int]]]) -> Tuple[Dict, Dict]:
     """
     Consolidates multiple variants of the same transcript ID based on TT tag.
     All 'ISM' variants for a given ID are merged into one.
-    All 'Known' variants for a given ID are merged into one.
+    All 'Known' variants for a given ID are merged into one, and the representative's exon_blocks are set to match the annotation GTF.
     """
     final_structures = {}
-    key_remap = {}  # Maps a merged-away splice_key -> representative splice_key
-    # Key: (transcript_id, tt_tag), Value: representative splice_key
+    key_remap = {}
     representatives = {}
 
     for splice_key, data in raw_structures.items():
         tt_tag = data.get("tt_tag")
         tx_id = data.get("transcript_id")
 
-        # Only consolidate KNOWN and ISM variants. Other types are unique by structure.
-        if tt_tag in ("KNOWN", "ISM"):
+        if tt_tag == "KNOWN":
             group_key = (tx_id, tt_tag)
             if group_key not in representatives:
-                # First time seeing this combo (e.g., first ISM for ENST100). It becomes the representative.
+                representatives[group_key] = splice_key
+                # Overwrite exon_blocks and transcript_length to match annotation GTF
+                if tx_id in transcript_exon_blocks:
+                    data["exon_blocks"] = sorted(transcript_exon_blocks[tx_id], key=lambda x: x[0])
+                    if data["exon_blocks"]:
+                        data["transcript_length"] = sum(e - s for s, e in data["exon_blocks"])
+                final_structures[splice_key] = data
+            else:
+                rep_key = representatives[group_key]
+                for sample, count in data["read_counts"].items():
+                    final_structures[rep_key]["read_counts"][sample] += count
+                final_structures[rep_key]["lengths"].extend(data["lengths"])
+                key_remap[splice_key] = rep_key
+        elif tt_tag == "ISM":
+            group_key = (tx_id, tt_tag)
+            if group_key not in representatives:
                 representatives[group_key] = splice_key
                 final_structures[splice_key] = data
             else:
-                # Merge this variant into its group representative.
                 rep_key = representatives[group_key]
-                # Check if the representative key is the same as the current key
-                if rep_key != splice_key:
-                    for sample, count in data["read_counts"].items():
-                        final_structures[rep_key]["read_counts"][sample] += count
-                    final_structures[rep_key]["lengths"].extend(data["lengths"])
-                    key_remap[splice_key] = rep_key
+                for sample, count in data["read_counts"].items():
+                    final_structures[rep_key]["read_counts"][sample] += count
+                final_structures[rep_key]["lengths"].extend(data["lengths"])
+                key_remap[splice_key] = rep_key
         else:
-            # This is a NIC, NNC, solo, etc. Keep it as a unique entry.
             final_structures[splice_key] = data
-            
+
     # Recalculate mean length for the merged groups
     for rep_key in representatives.values():
         if rep_key in final_structures:
             lengths = final_structures[rep_key]["lengths"]
             if lengths:
                 final_structures[rep_key]["transcript_length"] = round(sum(lengths) / len(lengths))
+            # For KNOWN, ensure transcript_length matches annotation if available
+            data = final_structures[rep_key]
+            if data.get("tt_tag") == "KNOWN":
+                tx_id = data.get("transcript_id")
+                if tx_id in transcript_exon_blocks:
+                    data["exon_blocks"] = sorted(transcript_exon_blocks[tx_id], key=lambda x: x[0])
+                    if data["exon_blocks"]:
+                        data["transcript_length"] = sum(e - s for s, e in data["exon_blocks"])
 
     print(f"Consolidated {len(key_remap)} redundant KNOWN/ISM structures into representative entries.")
     return final_structures, key_remap
@@ -265,23 +311,25 @@ def main():
     ap.add_argument("--id_tag", default="TX", help="BAM tag for transcript ID.")
     ap.add_argument("--gene_tag", default="GX", help="BAM tag for gene ID.")
     ap.add_argument("--threads", type=int, default=os.cpu_count(), help="Number of threads to use.")
+    ap.add_argument("--exon_merge_distance", type=int, default=5, help="Merge exon blocks that are <= this many nucleotides apart (default: 5).")
     args = ap.parse_args()
 
     print(f"reconcileBams.py version {__version__}")
 
     os.makedirs(args.outdir, exist_ok=True)
-    known_gene_ids, known_tx_ids, gene_id_to_name, transcript_id_to_name = parse_gtf_for_ids_and_names(args.annotation)
+    known_gene_ids, known_tx_ids, gene_id_to_name, transcript_id_to_name, transcript_gtf_lines, transcript_exon_blocks = parse_gtf_for_ids_and_names(args.annotation)
     sample_names_map = {path: get_unique_sample_name(path, args.bams) for path in args.bams}
 
     print(f"\n=== Step 1: Collecting structures and assigning IDs (using {args.threads} threads)... ===")
     raw_data = collect_and_assign_ids(
         args.bams, sample_names_map, known_gene_ids, known_tx_ids,
-        args.id_tag, args.gene_tag, args.gene_prefix, args.tx_prefix, args.threads
+        args.id_tag, args.gene_tag, args.gene_prefix, args.tx_prefix, args.threads,
+        args.exon_merge_distance
     )
     print(f"Initially processed {len(raw_data)} unique transcript structures.")
 
     print("\n=== Step 1.5: Consolidating KNOWN/ISM variants... ===")
-    final_data, key_remap = consolidate_transcript_variants(raw_data)
+    final_data, key_remap = consolidate_transcript_variants(raw_data, transcript_exon_blocks)
     print(f"Final dataset contains {len(final_data)} unique transcripts after consolidation.")
 
     # --- Summary of Findings ---
@@ -348,10 +396,25 @@ def main():
     with open(gtf_file, 'w') as f:
         for struct, data in output_data.items():
             gene_id, tx_id = data["gene_id"], data["transcript_id"]
+            tt_tag = data.get("tt_tag", "").upper()
+            if tt_tag == "KNOWN" and tx_id in transcript_gtf_lines:
+                # MODIFICATION: Rewrite annotation lines to strip suffixes and add transcript_type
+                for line in transcript_gtf_lines[tx_id]:
+                    parts = line.strip().split('\t')
+                    attributes_str = parts[8]
+                    # Replace IDs with the suffix-less versions
+                    attributes_str = re.sub(r'gene_id\s+"[^"]+"', f'gene_id "{gene_id}"', attributes_str)
+                    attributes_str = re.sub(r'transcript_id\s+"[^"]+"', f'transcript_id "{tx_id}"', attributes_str)
+                    # Add the new transcript_type attribute
+                    attributes_str = f'{attributes_str.rstrip()} transcript_type "KNOWN";'
+                    parts[8] = attributes_str
+                    f.write('\t'.join(parts) + '\n')
+                continue
+
             chrom, strand, _ = struct
             min_start = min(block[0] for block in data["exon_blocks"]) + 1
             max_end = max(block[1] for block in data["exon_blocks"])
-            attributes = f'gene_id "{gene_id}"; transcript_id "{tx_id}";'
+            attributes = f'gene_id "{gene_id}"; transcript_id "{tx_id}"; transcript_type "{tt_tag}";'
             f.write(f"{chrom}\tTALON\ttranscript\t{min_start}\t{max_end}\t.\t{strand}\t.\t{attributes}\n")
             for exon_start, exon_end in sorted(data["exon_blocks"], key=lambda x: x[0]):
                 f.write(f"{chrom}\tTALON\texon\t{exon_start + 1}\t{exon_end}\t.\t{strand}\t.\t{attributes}\n")
