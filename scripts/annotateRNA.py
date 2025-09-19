@@ -667,9 +667,9 @@ def main():
                 f_out.write(f_in.read())
             for model in novel_models.values():
                 attributes = f'gene_id "{model["gene_id"]}"; transcript_id "{model["id"]}";'
-                f_out.write(f"\n{model['chrom']}\tTALON\ttranscript\t{model['exons'][0][0]}\t{model['exons'][-1][1]}\t.\t{model['strand']}\t.\t{attributes}")
+                f_out.write(f"\n{model['chrom']}\tDOGME\ttranscript\t{model['exons'][0][0]}\t{model['exons'][-1][1]}\t.\t{model['strand']}\t.\t{attributes}")
                 for i, exon in enumerate(model['exons'], 1):
-                    f_out.write(f"\n{model['chrom']}\tTALON\texon\t{exon[0]}\t{exon[1]}\t.\t{model['strand']}\t.\t{attributes} exon_number \"{i}\";")
+                    f_out.write(f"\n{model['chrom']}\tDOGME\texon\t{exon[0]}\t{exon[1]}\t.\t{model['strand']}\t.\t{attributes} exon_number \"{i}\";")
 
     # --- Final Statistics Reporting ---
     log_message("--- Final Statistics ---")

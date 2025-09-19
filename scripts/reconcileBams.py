@@ -301,7 +301,7 @@ def rewrite_bam(in_bam: str, out_bam: str, struct_to_new_id: Dict, id_tag: str, 
     print(f"  - Finished rewriting {os.path.basename(in_bam)}: changed IDs for {changed_count} / {total_count} reads. Mapping file created.")
 
 def main():
-    ap = argparse.ArgumentParser(description="Generate TALON-compatible files.")
+    ap = argparse.ArgumentParser(description="Generate reconciled BAM and annotation files.")
     ap.add_argument("--bams", required=True, nargs='+', help="List of input BAM files.")
     ap.add_argument("--annotation", required=True, help="Reference annotation GTF file.")
     ap.add_argument("--out_prefix", required=True, help="Prefix for GTF and abundance files.")
@@ -387,7 +387,7 @@ def main():
         ) for bam_file in args.bams]
         concurrent.futures.wait(futures)
 
-    print("\n=== Step 3: Generating TALON files... ===")
+    print("\n=== Step 3: Generating DOGME annotation files... ===")
     gtf_file = os.path.join(args.outdir, f"{args.out_prefix}.gtf")
     abundance_file = os.path.join(args.outdir, f"{args.out_prefix}_abundance.tsv")
     output_data = {k: v for k, v in final_data.items() if v["transcript_id"] != "solo"}
@@ -415,9 +415,9 @@ def main():
             min_start = min(block[0] for block in data["exon_blocks"]) + 1
             max_end = max(block[1] for block in data["exon_blocks"])
             attributes = f'gene_id "{gene_id}"; transcript_id "{tx_id}"; transcript_type "{tt_tag}";'
-            f.write(f"{chrom}\tTALON\ttranscript\t{min_start}\t{max_end}\t.\t{strand}\t.\t{attributes}\n")
+            f.write(f"{chrom}\tDOGME\ttranscript\t{min_start}\t{max_end}\t.\t{strand}\t.\t{attributes}\n")
             for exon_start, exon_end in sorted(data["exon_blocks"], key=lambda x: x[0]):
-                f.write(f"{chrom}\tTALON\texon\t{exon_start + 1}\t{exon_end}\t.\t{strand}\t.\t{attributes}\n")
+                f.write(f"{chrom}\tDOGME\texon\t{exon_start + 1}\t{exon_end}\t.\t{strand}\t.\t{attributes}\n")
 
     with open(abundance_file, 'w') as f:
         unique_sample_names = list(sample_names_map.values())
