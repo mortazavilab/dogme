@@ -5,6 +5,7 @@ nextflow.enable.dsl=2
 include { mainWorkflow } from './nanoporeModule'
 include { reportsWorkflow } from './nanoporeModule'
 include { remapWorkflow } from './nanoporeModule'
+include { basecallWorkflow } from './nanoporeModule'
 include { modificationWorkflow } from './nanoporeModule'
 include { annotateRNAWorkflow } from './nanoporeModule'
 
@@ -17,7 +18,7 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
-def dogmeVersion = "1.2.1"
+def dogmeVersion = "1.2.2"
 def defaultModDir = "${launchDir}/doradoModels"
 
 workflow {
@@ -33,6 +34,21 @@ workflow {
     theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
 
     results = mainWorkflow(dogmeVersion, theModel, modDir)
+}
+
+workflow basecall {
+    modDir = getParamOrDefault(params.modDir, defaultModDir)
+    params.modDir = modDir
+
+    def modificationsMap = [
+        "RNA": 'inosine_m6A,pseU,m5C',
+        "DNA": '5mCG_5hmCG,6mA'
+    ]
+
+    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
+
+    results = basecallWorkflow(dogmeVersion, theModel, modDir)
 }
 
 workflow remap {
