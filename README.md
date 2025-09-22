@@ -120,6 +120,7 @@ By default, the pipeline will create several folders within the launch directory
 ## Entry Points
 
 - **main**: Full pipeline from pod5 files to mapped/annotated/filtered outputs.
+- **basecall**: basecall pod5 files into unmapped bam file.
 - **remap**: Remap reads starting from unmapped BAM files.
 - **modkit**: Run modification extraction and filtering.
 - **reports**: Generate summary reports only.

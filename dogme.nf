@@ -5,6 +5,7 @@ nextflow.enable.dsl=2
 include { mainWorkflow } from './nanoporeModule'
 include { reportsWorkflow } from './nanoporeModule'
 include { remapWorkflow } from './nanoporeModule'
+include { basecallWorkflow } from './nanoporeModule'
 include { modificationWorkflow } from './nanoporeModule'
 include { annotateRNAWorkflow } from './nanoporeModule'
 include { basecallWorkflow } from './nanoporeModule'
