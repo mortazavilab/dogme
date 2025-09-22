@@ -331,7 +331,7 @@ process gtfToJunctionBed {
     path "*.junctions.bed"
     script:
     """
-    python3 ${projectDir}/scripts/gtf_to_junction_bed.py ${gtf_file} > ${gtf_file.simpleName}.junctions.bed
+    python ${projectDir}/scripts/gtf_to_junction_bed.py ${gtf_file} > ${gtf_file.simpleName}.junctions.bed
     """
 }
 
@@ -345,7 +345,7 @@ process annotateRNATask {
     publishDir params.annotDir, mode: 'copy'
     script:
     """
-    python3 ${projectDir}/scripts/annotateRNA.py \
+    python ${projectDir}/scripts/annotateRNA.py \
         --bam ${bam} \
         --gtf ${gtf} \
         --out ${params.sample}.${genomeName} \
@@ -525,4 +525,19 @@ workflow annotateRNAWorkflow {
         .map { genomeName, bam, bai, gtf -> tuple(bam, bai, genomeName, gtf) }
 
     annotateRNATask(mappedBamsWithGtf)
+}
+
+workflow basecallWorkflow {
+    take:
+    theVersion
+    theModel 
+    modelDirectory
+
+    main: 
+    modelPath = doradoDownloadTask(modelDirectory, theModel)
+    softwareVTask(theVersion, modelPath)
+    def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
+    bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
+    fileCount = bamFiles.map { it.size() }.first()
+    unmappedbam = mergeBamsTask(fileCount)
 }
