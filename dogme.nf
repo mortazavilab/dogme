@@ -8,7 +8,6 @@ include { remapWorkflow } from './nanoporeModule'
 include { basecallWorkflow } from './nanoporeModule'
 include { modificationWorkflow } from './nanoporeModule'
 include { annotateRNAWorkflow } from './nanoporeModule'
-include { basecallWorkflow } from './nanoporeModule'
 
 def getParamOrDefault(param, defaultValue) {
     if (param == null || param == 'null' || param == 'undefined' || !param) {

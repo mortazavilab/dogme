@@ -542,17 +542,3 @@ workflow annotateRNAWorkflow {
     annotateRNATask(mappedBamsWithGtf)
 }
 
-workflow basecallWorkflow {
-    take:
-    theVersion
-    theModel 
-    modelDirectory
-
-    main: 
-    modelPath = doradoDownloadTask(modelDirectory, theModel)
-    softwareVTask(theVersion, modelPath)
-    def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
-    bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
-    fileCount = bamFiles.map { it.size() }.first()
-    unmappedbam = mergeBamsTask(fileCount)
-}
