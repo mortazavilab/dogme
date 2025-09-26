@@ -376,9 +376,9 @@ def sort_and_index_bam(unsorted_bam_path, sorted_bam_path):
         log_message(f"ERROR: samtools command failed: {e}", level="ERROR")
         sys.exit(1)
 
-def generate_talon_output(abundance, transcript_info, novel_models, gene_id_to_name, prefix, sample_name):
-    talon_abundance_file = f"{prefix}_talon_abundance.tsv"
-    log_message(f"Generating TALON abundance file: {talon_abundance_file}")
+def generate_dogme_output(abundance, transcript_info, novel_models, gene_id_to_name, prefix, sample_name):
+    dogme_abundance_file = f"{prefix}_dogme_abundance.tsv"
+    log_message(f"Generating DOGME abundance file: {dogme_abundance_file}")
 
     full_transcript_db = {}
     for tx_id, info in transcript_info.items():
@@ -392,7 +392,7 @@ def generate_talon_output(abundance, transcript_info, novel_models, gene_id_to_n
             "length": sum(end - start + 1 for start, end in model['exons'])
         }
 
-    with open(talon_abundance_file, 'w') as f:
+    with open(dogme_abundance_file, 'w') as f:
         header = [
             "gene_ID", "transcript_ID", "annot_gene_id", "annot_transcript_id",
             "annot_gene_name", "annot_transcript_name", "n_exons", "length",
@@ -450,7 +450,7 @@ def main():
     parser.add_argument("--gtf", "-g", required=True, help="Gene annotation file.")
     parser.add_argument("--out", "-o", required=True, help="Output file prefix.")
     parser.add_argument("--threads", "-t", type=int, default=1, help="Number of threads.")
-    parser.add_argument("--talon", action="store_true", help="Generate TALON-compatible output.")
+    parser.add_argument("--dogme", action="store_true", help="Generate DOGME-compatible output.")
     parser.add_argument("--chunk_size", type=int, default=5000, help="Reads per chunk.")
     parser.add_argument("--num_reads", type=int, default=None, help="Process first N reads.")
     parser.add_argument("--min_intron_len", type=int, default=30, help="Min intron length.")
@@ -657,12 +657,12 @@ def main():
     generate_qc_report(abundance_counter, gene_id_to_name, qc_report_file)
     sort_and_index_bam(unsorted_bam_file, sorted_bam_file)
     
-    if args.talon:
+    if args.dogme:
         sample_name = os.path.basename(output_prefix)
-        generate_talon_output(abundance_counter, transcript_info, novel_models, gene_id_to_name, output_prefix, sample_name)
-        talon_gtf_file = f"{output_prefix}_talon.gtf"
-        log_message(f"Generating TALON GTF file: {talon_gtf_file}")
-        with open(talon_gtf_file, 'w') as f_out:
+        generate_dogme_output(abundance_counter, transcript_info, novel_models, gene_id_to_name, output_prefix, sample_name)
+        dogme_gtf_file = f"{output_prefix}_dogme.gtf"
+        log_message(f"Generating DOGME GTF file: {dogme_gtf_file}")
+        with open(dogme_gtf_file, 'w') as f_out:
             with open(args.gtf, 'r') as f_in:
                 f_out.write(f_in.read())
             for model in novel_models.values():
