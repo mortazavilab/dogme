@@ -8,7 +8,7 @@ from collections import Counter
 import pysam
 import concurrent.futures
 
-__version__ = "1.0.4"
+__version__ = "1.0.5"
 
 # ==============================================================================
 # GTF Parsing
@@ -338,19 +338,25 @@ def main():
     category_counts = Counter(data.get('tt_tag', 'UNKNOWN') for data in final_data.values() if data.get('transcript_id') != 'solo')
     solo_count = sum(1 for data in final_data.values() if data.get('transcript_id') == 'solo')
 
-    # Only count truly novel transcript IDs (not ISM/KNOWN) for summary
-    novel_transcript_ids = set()
-    for data in final_data.values():
-        tt = data.get('tt_tag', '').upper()
-        tid = data.get('transcript_id')
-        if data.get('is_novel_transcript', False) and tid and tid != 'solo' and tt not in ("KNOWN", "ISM"):
-            novel_transcript_ids.add(tid)
-    # Count novel gene IDs as before
+    # Count novel gene IDs
     novel_gene_ids = set()
     for data in final_data.values():
         if data.get('is_novel_gene', False) and data.get('gene_id'):
-            novel_gene_ids.add(data['gene_id'])
+            # Only count as novel gene if it has non-solo reads
+            total_reads = sum(data["read_counts"].values())
+            if total_reads > 1:
+                novel_gene_ids.add(data['gene_id'])
+                
+    # Count novel transcript IDs (excluding solo and antisense)
+    novel_transcript_ids = set()
+    for data in final_data.values():
+        if data.get('is_novel_transcript', False) and data.get('transcript_id') != 'solo':
+            # Exclude antisense transcripts
+            tt_tag = data.get('tt_tag', '').upper()
+            if tt_tag != 'ANTISENSE':
+                novel_transcript_ids.add(data['transcript_id'])
 
+    # Print all categories
     for category, count in sorted(category_counts.items()):
         line = f"  - {category.capitalize()} transcripts:{' ':<27} {count}"
         print(line)
@@ -359,10 +365,11 @@ def main():
         line = f"  - {'Single-read solo transcripts (will be filtered):':<45} {solo_count}"
         print(line)
         summary_lines.append(line)
-    line = f"  - Number of genes with {args.gene_prefix} IDs: {len(novel_gene_ids)}"
+
+    line = f"  - Number of novel genes (with {args.gene_prefix} IDs): {len(novel_gene_ids)}"
     print(line)
     summary_lines.append(line)
-    line = f"  - Number of transcripts with {args.tx_prefix} IDs: {len(novel_transcript_ids)}"
+    line = f"  - Number of novel transcripts (with {args.tx_prefix} IDs): {len(novel_transcript_ids)}"
     print(line)
     summary_lines.append(line)
 
