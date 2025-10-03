@@ -98,11 +98,15 @@ process minimapTask {
     input:
     tuple path(inputFile), val(genomeRef), val(annotRef), val(genomeName)
     output:
-    tuple path("${params.sample}.${genomeName}.bam"), path("${params.sample}.${genomeName}.bam.bai"), val(genomeName)
+    tuple path("${inputFile.simpleName}.${genomeName}.bam"), path("${inputFile.simpleName}.${genomeName}.bam.bai"), val(genomeName)
     publishDir params.bamDir, mode: 'copy'
     script:
     """
     . ${params.scriptEnv}
+    # Extract sample name from inputFile
+    # Use the inputFile name to determine the sample name
+    sample_name=${inputFile.simpleName}
+    
     if [[ "${params.readType}" == "RNA" ]]; then
         python ${projectDir}/scripts/gtf_to_junction_bed.py ${annotRef} > junc.bed
         minimap2_opts="-ax splice -uf -G 500000 --junc-bed junc.bed"
@@ -112,10 +116,10 @@ process minimapTask {
     else
         minimap2_opts="-ax lr:hq"
     fi
-    samtools fastq --threads 64 -T MM,ML,pt ${params.sample}.unmapped.bam | \
+    samtools fastq --threads 64 -T MM,ML,pt \${sample_name}.unmapped.bam | \
     minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} - | \
-    samtools sort - --threads 64 > ${params.sample}.${genomeName}.bam \
-    && samtools index -@ 64 ${params.sample}.${genomeName}.bam
+    samtools sort - --threads 64 > \${sample_name}.${genomeName}.bam \
+    && samtools index -@ 64 \${sample_name}.${genomeName}.bam
     """
 }
 
@@ -348,9 +352,9 @@ process annotateRNATask {
     python ${projectDir}/scripts/annotateRNA.py \
         --bam ${bam} \
         --gtf ${gtf} \
-        --out ${params.sample}.${genomeName} \
+        --out ${bam.simpleName}.${genomeName} \
         --threads ${task.cpus} \
-        --novel_prefix "${params.sample}_${genomeName}"
+        --novel_prefix "${bam.simpleName}_${genomeName}"
     """
 }
 
@@ -540,4 +544,3 @@ workflow annotateRNAWorkflow {
 
     annotateRNATask(mappedBamsWithGtf)
 }
-
