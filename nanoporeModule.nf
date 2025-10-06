@@ -290,12 +290,12 @@ process splitModificationTask {
 process generateReport {
     tag "Generate metadata and QC reports for ${sample_id}"
 
-    // Define the directory where the reports will be saved
-    publishDir "${params.outdir}/${sample_id}/Reports", mode: 'copy'
+    publishDir params.topDir, mode: 'copy'
 
     input:
     path report_inputs // The directory containing bams/, annot/, etc.
-    val sample_id      // The sample name (e.g., from your samplesheet)
+    path results
+    path openBeds
 
     output:
     path "inventory_report.tsv", emit: inventory_report
@@ -307,7 +307,7 @@ process generateReport {
         --input_dir ${report_inputs} \\
         --output_inventory inventory_report.tsv \\
         --output_qc qc_summary.csv \\
-        --sample ${sample_id}
+        --sample ${params.sample}
     """
 }
 
