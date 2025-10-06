@@ -98,7 +98,7 @@ process minimapTask {
     input:
     tuple path(inputFile), val(genomeRef), val(annotRef), val(genomeName)
     output:
-    tuple path("${inputFile.simpleName}.${genomeName}.bam"), path("${inputFile.simpleName}.${genomeName}.bam.bai"), val(genomeName)
+    tuple path("${inputFile.simpleName}.${genomeName}.bam"), path("${inputFile.simpleName}.${genomeName}.bam.bai"), val(genomeName), emit: mapped_bams
     publishDir params.bamDir, mode: 'copy'
     script:
     """
@@ -506,7 +506,8 @@ workflow remapWorkflow {
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
-    mappedBams = minimapTask(unmappedBams)
+    minimapTask(unmappedBams)
+    def mappedBams = minimapTask.out.mapped_bams
 
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         modificationWorkflow(mappedBams, theModel)
