@@ -19,7 +19,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 - **Bug Fixes and Robustness:**  
   Improved handling of file naming, tuple passing, and channel joining for multi-genome and multi-strand workflows.
 
-Dogme 1.2.1 updates `annotateRNA.py` to correctly label ISMs and lessen the number of NIC and NNC while labeling novel reads only observed once as `solo`. 
+Dogme 1.2.2 updates `annotateRNA.py` to output the old optional TALON outputs as dogme defaults, updated `reconcileBams.py` to report the correct number of consolidated genes, and added additional statistics for bams and fastqs in the final qc summary. 
 
 ---
 
