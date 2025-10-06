@@ -468,7 +468,8 @@ workflow mainWorkflow {
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
-    mappedBams = minimapTask(unmappedBams)
+    minimapTask(unmappedBams)
+    def mappedBams = minimapTask.out.mapped_bams
 
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         modificationWorkflow(mappedBams, theModel)
@@ -538,19 +539,34 @@ workflow reportsWorkflow {
 
 workflow annotateRNAWorkflow {
     take:
-    mapped_bams_ch   // tuples: (bam, bai, genomeName)
+    mapped_bams_ch
 
     main:
-    // Create a channel of (genomeName, gtf_path) from params.genome_annot_refs
+    // 1. Create the GTF channel
     gtf_ch = Channel
         .fromList(params.genome_annot_refs)
         .map { ref -> tuple(ref.name, file(ref.annot)) }
 
-    // Join mapped BAMs with GTFs by genome name
-    mappedBamsWithGtf = mapped_bams_ch
+    // 2. Prepare the BAM channel for grouping
+    def bams_for_grouping = mapped_bams_ch
         .map { bam, bai, genomeName -> tuple(genomeName, bam, bai) }
-        .join(gtf_ch, by: 0)
-        .map { genomeName, bam, bai, gtf -> tuple(bam, bai, genomeName, gtf) }
+
+    // 3. Group all BAMs by their genome name
+    def grouped_bams_ch = bams_for_grouping.groupTuple()
+
+    // 4. Combine each group of BAMs with its corresponding GTF file
+    def combined_ch = grouped_bams_ch.combine(gtf_ch, by: 0)
+
+    // 5. "Un-roll" the grouped structure back into a flat channel of 4 items
+    def mappedBamsWithGtf = combined_ch.flatMap { genomeName, bams, bais, gtf_file ->
+        def results = []
+        // Loop through each BAM in the group
+        for( int i = 0; i < bams.size(); i++ ) {
+            // Create a final tuple for each BAM: (bam, bai, genomeName, gtf_file)
+            results.add( tuple(bams[i], bais[i], genomeName, gtf_file) )
+        }
+        return results
+    }
 
     annotateRNATask(mappedBamsWithGtf)
 }
