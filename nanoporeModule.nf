@@ -363,7 +363,7 @@ process annotateRNATask {
         --gtf ${gtf} \
         --out ${bam.simpleName}.${genomeName} \
         --threads ${task.cpus} \
-        --novel_prefix "${bam.simpleName}_${genomeName}"
+        --novel_prefix "${bam.simpleName}_${genomeName} 2> annotateRNA.log"
     """
 }
 
