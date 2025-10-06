@@ -288,7 +288,7 @@ process splitModificationTask {
 }
 
 process generateReport {
-    tag "Generate metadata and QC reports for ${sample_id}"
+    tag "Generate metadata and QC reports for ${params.sample}"
 
     publishDir params.topDir, mode: 'copy'
 
