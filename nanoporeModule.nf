@@ -542,8 +542,8 @@ workflow annotateRNAWorkflow {
     mapped_bams_ch
 
     main:
-    // 1. Create the GTF channel
-    gtf_ch = Channel
+    // 1. Create the GTF channel with a new name: 'annotation_gtf_ch'
+    def annotation_gtf_ch = Channel
         .fromList(params.genome_annot_refs)
         .map { ref -> tuple(ref.name, file(ref.annot)) }
 
@@ -554,8 +554,8 @@ workflow annotateRNAWorkflow {
     // 3. Group all BAMs by their genome name
     def grouped_bams_ch = bams_for_grouping.groupTuple()
 
-    // 4. Combine each group of BAMs with its corresponding GTF file
-    def combined_ch = grouped_bams_ch.combine(gtf_ch, by: 0)
+    // 4. Combine with the renamed channel: 'annotation_gtf_ch'
+    def combined_ch = grouped_bams_ch.combine(annotation_gtf_ch, by: 0)
 
     // 5. "Un-roll" the grouped structure back into a flat channel of 4 items
     def mappedBamsWithGtf = combined_ch.flatMap { genomeName, bams, bais, gtf_file ->
