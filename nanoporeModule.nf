@@ -64,7 +64,7 @@ process doradoDownloadTask {
 }
 
 process doradoTask {
-    errorStrategy 'ignore'    
+    errorStrategy { task.attempt < 4 ? 'retry' : 'ignore' }    
     input:
     path inputFile
     val modDirIgnore
@@ -98,11 +98,15 @@ process minimapTask {
     input:
     tuple path(inputFile), val(genomeRef), val(annotRef), val(genomeName)
     output:
-    tuple path("${params.sample}.${genomeName}.bam"), path("${params.sample}.${genomeName}.bam.bai"), val(genomeName)
+    tuple path("${inputFile.simpleName}.${genomeName}.bam"), path("${inputFile.simpleName}.${genomeName}.bam.bai"), val(genomeName), emit: mapped_bams
     publishDir params.bamDir, mode: 'copy'
     script:
     """
     . ${params.scriptEnv}
+    # Extract sample name from inputFile
+    # Use the inputFile name to determine the sample name
+    sample_name=${inputFile.simpleName}
+    
     if [[ "${params.readType}" == "RNA" ]]; then
         python ${projectDir}/scripts/gtf_to_junction_bed.py ${annotRef} > junc.bed
         minimap2_opts="-ax splice -uf -G 500000 --junc-bed junc.bed"
@@ -112,10 +116,10 @@ process minimapTask {
     else
         minimap2_opts="-ax lr:hq"
     fi
-    samtools fastq --threads 64 -T MM,ML,pt ${params.sample}.unmapped.bam | \
+    samtools fastq --threads 64 -T MM,ML,pt \${sample_name}.unmapped.bam | \
     minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} - | \
-    samtools sort - --threads 64 > ${params.sample}.${genomeName}.bam \
-    && samtools index -@ 64 ${params.sample}.${genomeName}.bam
+    samtools sort - --threads 64 > \${sample_name}.${genomeName}.bam \
+    && samtools index -@ 64 \${sample_name}.${genomeName}.bam
     """
 }
 
@@ -284,17 +288,26 @@ process splitModificationTask {
 }
 
 process generateReport {
-    tag "Generate metadata report"
+    tag "Generate metadata and QC reports for ${params.sample}"
+
+    publishDir params.topDir, mode: 'copy'
+
     input:
-    path report_inputs
+    path report_inputs // The directory containing bams/, annot/, etc.
     path results
     path openBeds
+
     output:
-    path "report.tsv", emit: report
-    publishDir params.topDir, mode: 'copy'
+    path "inventory_report.tsv", emit: inventory_report
+    path "qc_summary.csv",       emit: qc_report
+
     script:
     """
-    python ${projectDir}/scripts/generate_report.py -i ${report_inputs} -o report.tsv
+    python ${projectDir}/scripts/generate_report.py \\
+        --input_dir ${report_inputs} \\
+        --output_inventory inventory_report.tsv \\
+        --output_qc qc_summary.csv \\
+        --sample ${params.sample}
     """
 }
 
@@ -331,7 +344,7 @@ process gtfToJunctionBed {
     path "*.junctions.bed"
     script:
     """
-    python3 ${projectDir}/scripts/gtf_to_junction_bed.py ${gtf_file} > ${gtf_file.simpleName}.junctions.bed
+    python ${projectDir}/scripts/gtf_to_junction_bed.py ${gtf_file} > ${gtf_file.simpleName}.junctions.bed
     """
 }
 
@@ -341,17 +354,16 @@ process annotateRNATask {
     output:
     path "*.annotated.ba*"
     path "*.csv"
-    path "*_talon*"
+    path "*_dogme*"
     publishDir params.annotDir, mode: 'copy'
     script:
     """
-    python3 ${projectDir}/scripts/annotateRNA.py \
+    python ${projectDir}/scripts/annotateRNA.py \
         --bam ${bam} \
         --gtf ${gtf} \
-        --out ${params.sample}.${genomeName} \
+        --out ${bam.simpleName}.${genomeName} \
         --threads ${task.cpus} \
-        --talon \
-        --novel_prefix "${params.sample}_${genomeName}"
+        --novel_prefix "${bam.simpleName}_${genomeName} 2> annotateRNA.log"
     """
 }
 
@@ -456,7 +468,8 @@ workflow mainWorkflow {
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
-    mappedBams = minimapTask(unmappedBams)
+    minimapTask(unmappedBams)
+    def mappedBams = minimapTask.out.mapped_bams
 
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         modificationWorkflow(mappedBams, theModel)
@@ -465,6 +478,21 @@ workflow mainWorkflow {
         placeholder2 = Channel.of(params.tmpDir)
         generateReport(params.topDir, placeholder1, placeholder2)
     }
+}
+
+workflow basecallWorkflow {
+    take:
+    theVersion
+    theModel 
+    modelDirectory
+    
+    main: 
+    modelPath = doradoDownloadTask(modelDirectory, theModel)
+    softwareVTask(theVersion, modelPath)
+    def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
+    bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
+    fileCount = bamFiles.map { it.size() }.first()
+    unmappedbam = mergeBamsTask(fileCount)
 }
 
 workflow remapWorkflow {
@@ -479,7 +507,8 @@ workflow remapWorkflow {
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
-    mappedBams = minimapTask(unmappedBams)
+    minimapTask(unmappedBams)
+    def mappedBams = minimapTask.out.mapped_bams
 
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         modificationWorkflow(mappedBams, theModel)
@@ -510,19 +539,34 @@ workflow reportsWorkflow {
 
 workflow annotateRNAWorkflow {
     take:
-    mapped_bams_ch   // tuples: (bam, bai, genomeName)
+    mapped_bams_ch
 
     main:
-    // Create a channel of (genomeName, gtf_path) from params.genome_annot_refs
+    // 1. Create the GTF channel
     gtf_ch = Channel
         .fromList(params.genome_annot_refs)
         .map { ref -> tuple(ref.name, file(ref.annot)) }
 
-    // Join mapped BAMs with GTFs by genome name
-    mappedBamsWithGtf = mapped_bams_ch
+    // 2. Prepare the BAM channel for grouping
+    def bams_for_grouping = mapped_bams_ch
         .map { bam, bai, genomeName -> tuple(genomeName, bam, bai) }
-        .join(gtf_ch, by: 0)
-        .map { genomeName, bam, bai, gtf -> tuple(bam, bai, genomeName, gtf) }
+
+    // 3. Group all BAMs by their genome name
+    def grouped_bams_ch = bams_for_grouping.groupTuple()
+
+    // 4. Combine each group of BAMs with its corresponding GTF file
+    def combined_ch = grouped_bams_ch.combine(gtf_ch, by: 0)
+
+    // 5. "Un-roll" the grouped structure back into a flat channel of 4 items
+    def mappedBamsWithGtf = combined_ch.flatMap { genomeName, bams, bais, gtf_file ->
+        def results = []
+        // Loop through each BAM in the group
+        for( int i = 0; i < bams.size(); i++ ) {
+            // Create a final tuple for each BAM: (bam, bai, genomeName, gtf_file)
+            results.add( tuple(bams[i], bais[i], genomeName, gtf_file) )
+        }
+        return results
+    }
 
     annotateRNATask(mappedBamsWithGtf)
 }
