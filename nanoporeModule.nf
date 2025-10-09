@@ -358,12 +358,19 @@ process annotateRNATask {
     publishDir params.annotDir, mode: 'copy'
     script:
     """
+    # If pipeline is running with CDNA read type, pass -CDNA to annotateRNA
+    if [[ "${params.readType}" == "CDNA" ]]; then
+        cdna_opt="-CDNA"
+    else
+        cdna_opt=""
+    fi
+
     python ${projectDir}/scripts/annotateRNA.py \
         --bam ${bam} \
         --gtf ${gtf} \
         --out ${bam.simpleName}.${genomeName} \
-        --threads ${task.cpus} \
-        --novel_prefix "${bam.simpleName}_${genomeName} 2> annotateRNA.log"
+        --threads ${task.cpus} $cdna_opt \
+        --novel_prefix "${bam.simpleName}_${genomeName}" 2> annotateRNA.log
     """
 }
 
