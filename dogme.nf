@@ -89,7 +89,11 @@ workflow annotateRNA {
         .filter { bam -> file(bam.toString() + '.bai').exists() }
         .map { bam ->
             def bai = file(bam.toString() + '.bai')
-            def genomeName = bam.baseName.replaceFirst("^${params.sample}\\.", "")
+            // Assume filename format is: sample_name.genome.bam
+            // Extract genomeName as the last dot-separated field of the base name
+            def baseName = bam.baseName
+            def parts = baseName.tokenize('.')
+            def genomeName = parts.size() > 1 ? parts[-1] : baseName
             return tuple(bam, bai, genomeName)
         }
 

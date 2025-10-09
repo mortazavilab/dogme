@@ -369,7 +369,7 @@ process annotateRNATask {
         --bam ${bam} \
         --gtf ${gtf} \
         --out ${bam.simpleName}.${genomeName} \
-        --threads ${task.cpus} $cdna_opt \
+        --threads ${task.cpus} \$cdna_opt \
         --novel_prefix "${bam.simpleName}_${genomeName}" 2> annotateRNA.log
     """
 }
