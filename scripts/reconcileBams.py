@@ -8,7 +8,7 @@ from collections import Counter
 import pysam
 import concurrent.futures
 
-__version__ = "1.0.5"
+__version__ = "1.1.2"
 
 # ==============================================================================
 # GTF Parsing
@@ -312,7 +312,13 @@ def main():
     ap.add_argument("--gene_tag", default="GX", help="BAM tag for gene ID.")
     ap.add_argument("--threads", type=int, default=os.cpu_count(), help="Number of threads to use.")
     ap.add_argument("--exon_merge_distance", type=int, default=5, help="Merge exon blocks that are <= this many nucleotides apart (default: 5).")
+    ap.add_argument("--min_tpm", type=float, default=1.0, help="Minimum TPM (transcripts per million) required in a sample to count as expressed. Default 1.0.")
+    ap.add_argument("--min_samples", type=int, default=2, help="Minimum number of samples that must meet the TPM threshold for a transcript to be retained (default: 2).")
+    ap.add_argument("--filter_known", action='store_true', help="Also apply TPM filtering to known transcripts (by default only novel transcripts are filtered).")
     args = ap.parse_args()
+    # Ensure min_samples is at least 1
+    if args.min_samples is None or args.min_samples < 1:
+        args.min_samples = 1
 
     print(f"reconcileBams.py version {__version__}")
 
@@ -381,6 +387,33 @@ def main():
         for line in summary_lines:
             f.write(line + "\n")
 
+    # --- Per-sample novelty counts (reads per novelty type) ---
+    try:
+        unique_sample_names = list(sample_names_map.values())
+        from collections import Counter as _Counter
+        novelty_counts = {s: _Counter() for s in unique_sample_names}
+        categories = set()
+        for data in final_data.values():
+            # Determine category: use TT tag unless transcript is 'solo'
+            cat = data.get('tt_tag', 'UNKNOWN')
+            if data.get('transcript_id') == 'solo':
+                cat = 'SOLO'
+            cat = cat.upper() if isinstance(cat, str) else str(cat)
+            categories.add(cat)
+            for s in unique_sample_names:
+                novelty_counts[s][cat] += data['read_counts'].get(s, 0)
+
+        categories = sorted(categories)
+        novelty_csv = os.path.join(args.outdir, f"{args.out_prefix}_novelty_by_sample.csv")
+        with open(novelty_csv, 'w') as nf:
+            nf.write('sample,' + ','.join(categories) + '\n')
+            for s in unique_sample_names:
+                row = [s] + [str(novelty_counts[s].get(c, 0)) for c in categories]
+                nf.write(','.join(row) + '\n')
+        print(f"Wrote per-sample novelty counts to: {novelty_csv}")
+    except Exception as e:
+        print(f"[WARN] Could not write novelty-by-sample CSV: {e}", file=sys.stderr)
+
     struct_to_new_id = {k: (v["gene_id"], v["transcript_id"]) for k, v in final_data.items()}
     for merged_key, representative_key in key_remap.items():
         if representative_key in struct_to_new_id:
@@ -398,8 +431,77 @@ def main():
     gtf_file = os.path.join(args.outdir, f"{args.out_prefix}.gtf")
     abundance_file = os.path.join(args.outdir, f"{args.out_prefix}_abundance.tsv")
     output_data = {k: v for k, v in final_data.items() if v["transcript_id"] != "solo"}
-    print(f"Writing {len(output_data)} unique transcripts to output files.")
 
+    # If requested, filter transcripts by minimum TPM across samples
+    # By default only novel transcripts are filtered; set --filter_known to include KNOWN transcripts too.
+    # A transcript is retained if it has TPM >= min_tpm in at least `min_samples` samples.
+    if args.min_tpm and args.min_tpm > 0.0:
+        unique_sample_names = list(sample_names_map.values())
+        # Decide which transcripts are subject to filtering
+        if args.filter_known:
+            to_filter = {k: v for k, v in output_data.items()}
+            preserved = {}
+        else:
+            to_filter = {k: v for k, v in output_data.items() if v.get('is_novel_transcript', True)}
+            preserved = {k: v for k, v in output_data.items() if k not in to_filter}
+
+        # Simplified TPM: assume each read is one transcript (ignore transcript length).
+        # TPM per sample will be computed directly from counts: TPM = (count / sum_counts) * 1e6
+        counts = {s: {} for s in unique_sample_names}
+        for struct, data in to_filter.items():
+            for s in unique_sample_names:
+                count = data["read_counts"].get(s, 0)
+                counts[s][struct] = count
+
+        # Calculate TPMs per sample and decide which transcripts to keep
+        from collections import Counter as _Counter
+        pass_counts = _Counter()
+        for s in unique_sample_names:
+            sum_counts = sum(counts[s].values())
+            if sum_counts <= 0:
+                # No expression in this sample; skip
+                continue
+            for struct, val in counts[s].items():
+                tpm = (val / sum_counts) * 1e6 if sum_counts > 0 else 0.0
+                if tpm >= args.min_tpm:
+                    pass_counts[struct] += 1
+
+        transcripts_to_keep = {struct for struct, cnt in pass_counts.items() if cnt >= args.min_samples}
+
+        before_novel = len(to_filter)
+        kept_novel = {k: v for k, v in to_filter.items() if k in transcripts_to_keep}
+        removed_novel = before_novel - len(kept_novel)
+        # Merge preserved (known transcripts or those not under filter) with kept novel transcripts
+        output_data = {**preserved, **kept_novel}
+        after_total = len(output_data)
+        print(f"Applied TPM filter to {'all transcripts' if args.filter_known else 'novel transcripts'}: min_tpm={args.min_tpm} in >= {args.min_samples} samples. Kept {len(kept_novel)} novel transcripts; removed {removed_novel} novel transcripts.")
+        # Append TPM filter result to the summary report if it exists
+        try:
+            with open(report_file, "a") as f:
+                f.write(f"Filtered {'all' if args.filter_known else 'novel'} transcripts by min_TPM {args.min_tpm} in >= {args.min_samples} samples: removed {removed_novel} novel transcripts, remaining total {after_total}\n")
+        except Exception:
+            # If the report file isn't available (shouldn't happen), just continue
+            pass
+    else:
+        print(f"Writing {len(output_data)} unique transcripts to output files.")
+    # --- Append counts of novel transcript models by type after filtering ---
+    try:
+        novel_model_counts = Counter()
+        for data in output_data.values():
+            if data.get('is_novel_transcript', False):
+                tt = data.get('tt_tag', 'NOVEL')
+                novel_model_counts[tt.upper() if isinstance(tt, str) else str(tt)] += 1
+        with open(report_file, 'a') as f:
+            f.write('\n=== Novel transcript models by type (after filtering) ===\n')
+            total_novel = sum(novel_model_counts.values())
+            f.write(f"Total novel transcripts (after filtering): {total_novel}\n")
+            for cat, cnt in sorted(novel_model_counts.items()):
+                f.write(f"  - {cat}: {cnt}\n")
+        print("Novel transcript model counts (after filtering):")
+        for cat, cnt in sorted(novel_model_counts.items()):
+            print(f"  - {cat}: {cnt}")
+    except Exception as e:
+        print(f"[WARN] Could not append novel model counts to summary: {e}", file=sys.stderr)
     with open(gtf_file, 'w') as f:
         for struct, data in output_data.items():
             gene_id, tx_id = data["gene_id"], data["transcript_id"]
@@ -428,10 +530,26 @@ def main():
 
     with open(abundance_file, 'w') as f:
         unique_sample_names = list(sample_names_map.values())
+        # Simplify sample names for the abundance header: take the first part before a period.
+        # Ensure uniqueness by appending numeric suffixes if collisions occur.
+        simplified_sample_names = []
+        seen = set()
+        for name in unique_sample_names:
+            simple = name.split('.')[0] if '.' in name else name
+            if simple in seen:
+                i = 1
+                new = f"{simple}_{i}"
+                while new in seen:
+                    i += 1
+                    new = f"{simple}_{i}"
+                simple = new
+            seen.add(simple)
+            simplified_sample_names.append(simple)
+
         header = ["gene_ID", "transcript_ID", "annot_gene_id", "annot_transcript_id",
                   "annot_gene_name", "annot_transcript_name", "n_exons",
                   "transcript_length", "gene_novelty", "transcript_novelty",
-                  "ISM_subtype"] + unique_sample_names
+                  "ISM_subtype"] + simplified_sample_names
         f.write('\t'.join(header) + '\n')
         for struct, data in output_data.items():
             gene_id, tx_id = data["gene_id"], data["transcript_id"]
@@ -442,6 +560,7 @@ def main():
             gene_name = gene_id_to_name.get(gene_id, "NA")
             tx_name = transcript_id_to_name.get(tx_id, "NA")
             row = [gene_id, tx_id, annot_gene_id, annot_tx_id, gene_name, tx_name, str(len(data['exon_blocks'])), tx_len, gene_novelty_str, tx_novelty_str, "NA"]
+            # Append counts in the original sample name order to match simplified headers
             for s_name in unique_sample_names:
                 row.append(str(data["read_counts"].get(s_name, 0)))
             f.write('\t'.join(row) + '\n')
