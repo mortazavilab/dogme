@@ -328,7 +328,7 @@ def main():
     print(f"reconcileBams.py version {__version__}")
 
     os.makedirs(args.outdir, exist_ok=True)
-    known_gene_ids, known_tx_ids, gene_id_to_name, transcript_id_to_name, transcript_gtf_lines, transcript_exon_blocks = parse_gtf_for_ids_and_names(args.annotation)
+    known_gene_ids, known_tx_ids, gene_id_to_name, transcript_id_to_name, transcript_gtf_lines, transcript_exon_blocks, gene_id_to_strand = parse_gtf_for_ids_and_names(args.annotation)
     sample_names_map = {path: get_unique_sample_name(path, args.bams) for path in args.bams}
 
     print(f"\n=== Step 1: Collecting structures and assigning IDs (using {args.threads} threads)... ===")
