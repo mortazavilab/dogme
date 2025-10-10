@@ -255,6 +255,100 @@ def consolidate_transcript_variants(raw_structures: Dict, transcript_exon_blocks
     print(f"Consolidated {len(key_remap)} redundant KNOWN/ISM structures into representative entries.")
     return final_structures, key_remap
 
+
+def consolidate_strand_switched_models(final_structures: Dict, key_remap: Dict, gene_id_to_strand: Dict) -> Tuple[Dict, Dict]:
+    """
+    For novel models (NNC/NIC/ISM) that were assigned a strand based on read orientation,
+    check whether flipping their strand (to match the annotated gene strand when available)
+    makes their splice junction set identical to an existing model (Known/ISM/NIC/NNC)
+    that resides on the gene's correct strand. If so, consolidate by merging read counts
+    and lengths into the already-correct model and add an entry to key_remap so BAMs
+    and downstream outputs use the consolidated transcript ID.
+
+    Returns updated final_structures and key_remap.
+    """
+    # Build mapping from (chrom, strand, juncs) -> struct key for quick lookup
+    junc_map = {}
+    for struct_key, data in final_structures.items():
+        chrom, strand, juncs = struct_key
+        # normalize juncs as tuple of strings
+        junc_map.setdefault((chrom, strand, tuple(juncs)), []).append(struct_key)
+
+    additions = {}
+    removals = []
+    merged = 0
+
+    # Helper to compute junctions from exon_blocks
+    def exon_blocks_to_juncs(exon_blocks: List[Tuple[int, int]], chrom: str) -> Tuple[str, str, Tuple[str, ...]]:
+        # exon_blocks assumed sorted
+        juncs = []
+        for a, b in zip(exon_blocks, exon_blocks[1:]):
+            # junc coordinates as 1-based closed-open -> represent as chrom:start-end
+            juncs.append(f"{chrom}:{a[1]+1}-{b[0]}")
+        # Strand placeholder here; caller will supply strand
+        return tuple(sorted(juncs))
+
+    # Iterate over candidates: novel models with types NNC/NIC/ISM
+    for struct_key, data in list(final_structures.items()):
+        tt = data.get('tt_tag', '').upper() if isinstance(data.get('tt_tag'), str) else ''
+        if tt not in ('NNC', 'NIC', 'ISM'):
+            continue
+        gene_id = data.get('gene_id')
+        if not gene_id:
+            continue
+        # get annotated gene strand if available
+        gstrand = gene_id_to_strand.get(gene_id)
+        if gstrand not in ('+', '-'):  # nothing to correct to
+            continue
+
+        chrom, current_strand, _ = struct_key
+        # compute splice junctions for this structure from exon_blocks
+        exon_juncs = []
+        blocks = sorted(data.get('exon_blocks', []), key=lambda x: x[0])
+        for a, b in zip(blocks, blocks[1:]):
+            exon_juncs.append(f"{chrom}:{a[1]+1}-{b[0]}")
+        if not exon_juncs:
+            continue
+
+        # If current strand already equals gene strand, skip
+        if current_strand == gstrand:
+            continue
+
+        # Create the key for the corrected strand
+        corrected_key = (chrom, gstrand, tuple(sorted(exon_juncs)))
+
+        # Is there an existing structure with the corrected_key?
+        candidates = junc_map.get(corrected_key, [])
+        if not candidates:
+            continue
+
+        # Prefer to merge into a 'KNOWN' first, otherwise any candidate
+        target_key = None
+        for c in candidates:
+            c_tt = final_structures[c].get('tt_tag', '').upper() if isinstance(final_structures[c].get('tt_tag'), str) else ''
+            if c_tt == 'KNOWN':
+                target_key = c
+                break
+        if target_key is None:
+            target_key = candidates[0]
+
+        # Merge counts and lengths into target_key
+        for s, cnt in data['read_counts'].items():
+            final_structures[target_key]['read_counts'][s] = final_structures[target_key]['read_counts'].get(s, 0) + cnt
+        final_structures[target_key]['lengths'].extend(data.get('lengths', []))
+        # Update transcript_length estimate
+        t_lengths = final_structures[target_key].get('lengths', [])
+        if t_lengths:
+            final_structures[target_key]['transcript_length'] = round(sum(t_lengths) / len(t_lengths))
+
+        # Record remapping so BAM rewrite will replace IDs
+        key_remap[struct_key] = target_key
+        merged += 1
+
+    if merged:
+        print(f"Consolidated {merged} novel models into existing models by strand correction.")
+    return final_structures, key_remap
+
 # ==============================================================================
 # Rewriting and Output Generation
 # ==============================================================================
@@ -341,6 +435,11 @@ def main():
 
     print("\n=== Step 1.5: Consolidating KNOWN/ISM variants... ===")
     final_data, key_remap = consolidate_transcript_variants(raw_data, transcript_exon_blocks)
+    # Attempt to consolidate novel models that match an existing model when strand is corrected
+    pre_remap_count = len(key_remap)
+    final_data, key_remap = consolidate_strand_switched_models(final_data, key_remap, gene_id_to_strand)
+    post_remap_count = len(key_remap)
+    strand_consolidated = max(0, post_remap_count - pre_remap_count)
     print(f"Final dataset contains {len(final_data)} unique transcripts after consolidation.")
 
     # --- Summary of Findings ---
@@ -391,6 +490,8 @@ def main():
         f.write("=== Summary of Findings ===\n")
         for line in summary_lines:
             f.write(line + "\n")
+        if strand_consolidated:
+            f.write(f"Consolidated {strand_consolidated} novel models by strand correction into existing models.\n")
 
     # --- Per-sample novelty counts (reads per novelty type) ---
     try:
