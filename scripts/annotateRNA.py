@@ -26,7 +26,7 @@ from multiprocessing import Pool, Manager
 from multiprocessing.managers import SyncManager
 import pysam
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 __author__ = "Elnaz A., Gemini, Ali M."
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Logging ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -474,6 +474,7 @@ def main():
     parser.add_argument("--junc_tolerance", type=int, default=2, help="Tolerance for matching splice junctions (e.g., 2 for +/- 2 bp).")
     parser.add_argument("--min_reads_for_novel", type=int, default=2, help="Minimum number of reads to support a novel gene or transcript (default: 2).")
     parser.add_argument("-CDNA", "--cdna", action="store_true", dest="cdna", default=False, help="Ignore read strand when matching to reference/novel transcript models (treat as cDNA).")
+    parser.add_argument("-antisense", "--antisense", action="store_true", dest="antisense", default=False, help="Track antisense transcripts separately.")
     parser.add_argument("--debug_gene", type=str, default=None, help="Debug a single gene ID, writing output to a file.")
     parser.add_argument("--debug_novel_type", type=str, default=None, help="Output details for a specific novel class (e.g., NNC, NIC).")
     parser.add_argument("--debug_read", type=str, default=None, help="Debug all possible gene/transcript assignments for a given read ID.")
@@ -645,9 +646,21 @@ def main():
                     new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
                     novel_transcript_locus_to_id[transcript_locus] = new_id
                     exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
+                    # Force strand of novel model to the gene's strand when the gene is known
+                    model_strand = read_strand
+                    try:
+                        if final_gene_id != "NOVELG":
+                            chrom_genes = genes.get(read.reference_name, {})
+                            gene_info = chrom_genes.get(final_gene_id)
+                            if gene_info and 'strand' in gene_info:
+                                model_strand = gene_info['strand']
+                    except Exception:
+                        # keep read strand if anything unexpected occurs
+                        model_strand = read_strand
+
                     novel_models[transcript_locus] = {
                         'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
-                        'strand': read_strand, 'exons': exons
+                        'strand': model_strand, 'exons': exons
                     }
                 final_transcript_id = novel_transcript_locus_to_id[transcript_locus]
             else:
@@ -698,17 +711,42 @@ def main():
             for line in debug_read_log_list:
                 f.write(line + '\n')
 
+    # Optionally filter out Antisense transcripts from DOGME outputs
     generate_qc_report(abundance_counter, gene_id_to_name, qc_report_file)
     sort_and_index_bam(unsorted_bam_file, sorted_bam_file)
-    
+
     sample_name = os.path.basename(output_prefix)
-    generate_dogme_output(abundance_counter, transcript_info, novel_models, gene_id_to_name, output_prefix, sample_name)
+    # If antisense tracking is disabled, remove Antisense entries from abundance_counter
+    abundance_for_dogme = abundance_counter.copy()
+    if not args.antisense:
+        # Remove any abundance keys where classification == 'Antisense'
+        keys_to_remove = [k for k in abundance_for_dogme.keys() if k[2] == 'Antisense']
+        for k in keys_to_remove:
+            del abundance_for_dogme[k]
+
+    # Also, avoid exporting antisense novel models into the DOGME abundance/gtf when antisense is disabled.
+    # Filter novel_models to exclude antisense models unless args.antisense is True.
+    novel_models_for_export = {}
+    if args.antisense:
+        novel_models_for_export = novel_models
+    else:
+        for k, model in novel_models.items():
+            if model.get('strand') == '+' or model.get('strand') == '-':
+                # keep model only if it's not classified as Antisense in abundance (we already removed Antisense from abundance)
+                # Since novel_models don't themselves carry classification, we will include models whose gene_id is not an Antisense gene
+                # Build a lookup: if any abundance entry references this transcript id with Antisense, skip it
+                tx_id = model.get('id')
+                is_antisense_tx = any((g, t, c) for (g, t, c) in abundance_counter.keys() if t == tx_id and c == 'Antisense')
+                if not is_antisense_tx:
+                    novel_models_for_export[k] = model
+
+    generate_dogme_output(abundance_for_dogme, transcript_info, novel_models_for_export, gene_id_to_name, output_prefix, sample_name)
     dogme_gtf_file = f"{output_prefix}_dogme.gtf"
     log_message(f"Generating DOGME GTF file: {dogme_gtf_file}")
     with open(dogme_gtf_file, 'w') as f_out:
         with open(args.gtf, 'r') as f_in:
             f_out.write(f_in.read())
-        for model in novel_models.values():
+        for model in novel_models_for_export.values():
             attributes = f'gene_id "{model["gene_id"]}"; transcript_id "{model["id"]}";'
             f_out.write(f"\n{model['chrom']}\tDOGME\ttranscript\t{model['exons'][0][0]}\t{model['exons'][-1][1]}\t.\t{model['strand']}\t.\t{attributes}")
             for i, exon in enumerate(model['exons'], 1):
