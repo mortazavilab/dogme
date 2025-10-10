@@ -8,12 +8,12 @@ from collections import Counter
 import pysam
 import concurrent.futures
 
-__version__ = "1.1.2"
+__version__ = "1.1.3"
 
 # ==============================================================================
 # GTF Parsing
 # ==============================================================================
-def parse_gtf_for_ids_and_names(gtf_file: str) -> Tuple[Set[str], Set[str], Dict[str, str], Dict[str, str], Dict[str, List[str]], Dict[str, List[Tuple[int, int]]]]:
+def parse_gtf_for_ids_and_names(gtf_file: str) -> Tuple[Set[str], Set[str], Dict[str, str], Dict[str, str], Dict[str, List[str]], Dict[str, List[Tuple[int, int]]], Dict[str, str]]:
     if not gtf_file or not os.path.exists(gtf_file):
         print("[WARN] No valid annotation GTF provided...", file=sys.stderr)
         return set(), set(), {}, {}, {}, {}
@@ -23,6 +23,7 @@ def parse_gtf_for_ids_and_names(gtf_file: str) -> Tuple[Set[str], Set[str], Dict
     gene_id_to_name, transcript_id_to_name = {}, {}
     transcript_gtf_lines = {}
     transcript_exon_blocks = {}
+    gene_id_to_strand = {}
     with open(gtf_file, 'r') as f:
         for line in f:
             if line.startswith('#'): continue
@@ -38,6 +39,10 @@ def parse_gtf_for_ids_and_names(gtf_file: str) -> Tuple[Set[str], Set[str], Dict
                 known_gene_ids.add(base_gene_id)
                 if gene_name_match and base_gene_id not in gene_id_to_name:
                     gene_id_to_name[base_gene_id] = gene_name_match.group(1)
+                # Capture gene strand from the first non-dot strand seen for this gene
+                strand_field = parts[6] if len(parts) > 6 else '.'
+                if base_gene_id not in gene_id_to_strand and strand_field in ('+', '-'):
+                    gene_id_to_strand[base_gene_id] = strand_field
             if tx_id_match:
                 base_tx_id = tx_id_match.group(1).split('.')[0]
                 known_transcript_ids.add(base_tx_id)
@@ -56,7 +61,7 @@ def parse_gtf_for_ids_and_names(gtf_file: str) -> Tuple[Set[str], Set[str], Dict
                     transcript_exon_blocks[base_tx_id].append((start, end))
     print(f"Found {len(known_gene_ids)} known gene IDs and {len(known_transcript_ids)} known transcript IDs.")
     print(f"Found names for {len(gene_id_to_name)} genes and {len(transcript_id_to_name)} transcripts.")
-    return known_gene_ids, known_transcript_ids, gene_id_to_name, transcript_id_to_name, transcript_gtf_lines, transcript_exon_blocks
+    return known_gene_ids, known_transcript_ids, gene_id_to_name, transcript_id_to_name, transcript_gtf_lines, transcript_exon_blocks, gene_id_to_strand
 
 # ==============================================================================
 # Splicing and Exon Definitions
@@ -521,6 +526,12 @@ def main():
                 continue
 
             chrom, strand, _ = struct
+            # If this is a novel model of type NNC/NIC/ISM, force its strand to the annotated gene strand when available
+            tt_upper = tt_tag.upper() if isinstance(tt_tag, str) else ''
+            if tt_upper in ("NNC", "NIC", "ISM"):
+                gstrand = gene_id_to_strand.get(gene_id)
+                if gstrand in ('+', '-'):
+                    strand = gstrand
             min_start = min(block[0] for block in data["exon_blocks"]) + 1
             max_end = max(block[1] for block in data["exon_blocks"])
             attributes = f'gene_id "{gene_id}"; transcript_id "{tx_id}"; transcript_type "{tt_tag}";'
