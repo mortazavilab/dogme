@@ -358,6 +358,7 @@ process annotateRNATask {
     publishDir params.annotDir, mode: 'copy'
     script:
     """
+    . ${params.scriptEnv}
     # If pipeline is running with CDNA read type, pass -CDNA to annotateRNA
     if [[ "${params.readType}" == "CDNA" ]]; then
         cdna_opt="-CDNA"
