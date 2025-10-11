@@ -8,7 +8,7 @@ from collections import Counter
 import pysam
 import concurrent.futures
 
-__version__ = "1.1.3"
+__version__ = "1.1.5"
 
 # ==============================================================================
 # GTF Parsing
@@ -109,8 +109,10 @@ def get_unique_sample_name(path: str, all_paths: List[str]) -> str:
 
 def _collect_reads_worker(bam_path: str, id_tag: str, gene_tag: str, merge_distance: int) -> Dict:
     local_reads = {}
+    total_reads = 0
     with pysam.AlignmentFile(bam_path, "rb") as bam:
         for r in bam:
+            total_reads += 1
             if r.is_unmapped or not r.cigartuples or len(r.cigartuples) < 3: continue
             key = splice_key(r)
             if not key[2]: continue
@@ -125,7 +127,8 @@ def _collect_reads_worker(bam_path: str, id_tag: str, gene_tag: str, merge_dista
                     }
                 }
             local_reads[key]["lengths"].append(r.query_alignment_length)
-    return (bam_path, local_reads)
+    # Return total read count alongside the per-structure local_reads
+    return (bam_path, local_reads, total_reads)
 
 def collect_and_assign_ids(
     bam_files: List[str], sample_names: Dict[str, str], known_gene_ids: Set[str],
@@ -135,6 +138,7 @@ def collect_and_assign_ids(
     all_unique_samples = list(sample_names.values())
     master_structures = {}
 
+    total_reads_map = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=threads) as executor:
         future_to_bam = {
             executor.submit(_collect_reads_worker, bam_path, id_tag, gene_tag, merge_distance): bam_path
@@ -142,8 +146,16 @@ def collect_and_assign_ids(
         }
         for future in concurrent.futures.as_completed(future_to_bam):
             try:
-                bam_path, local_reads = future.result()
+                res = future.result()
+                # _collect_reads_worker now returns (bam_path, local_reads, total_reads)
+                if isinstance(res, tuple) and len(res) == 3:
+                    bam_path, local_reads, nreads = res
+                else:
+                    # backwards compatibility: if worker returned older shape
+                    bam_path, local_reads = res
+                    nreads = sum(1 for _ in open(bam_path, 'rb')) if os.path.exists(bam_path) else 0
                 unique_name = sample_names[bam_path]
+                total_reads_map[unique_name] = nreads
                 for key, data in local_reads.items():
                     if key not in master_structures:
                         master_structures[key] = {"read_counts": {s: 0 for s in all_unique_samples}, "rep_read": data["rep_read"], "lengths": []}
@@ -167,7 +179,7 @@ def collect_and_assign_ids(
             data["transcript_id"] = read_tx_id
             data["gene_id"] = read_gene_id
             data["is_novel_gene"] = False
-            data["is_novel_transcript"] = (tt_tag == "ISM")
+            data["is_novel_transcript"] = False
         else:
             data["is_novel_transcript"] = True
             if read_gene_id and read_gene_id in known_gene_ids:
@@ -188,7 +200,8 @@ def collect_and_assign_ids(
         if data["gene_id"] is None:
             data["gene_id"] = f"{gene_prefix}{gene_counter}"
             gene_counter += 1
-    return master_structures
+    # Also return map of total reads per sample (sample name -> total reads in BAM)
+    return master_structures, total_reads_map
 
 # ==============================================================================
 # ISM Consolidation Logic
@@ -415,9 +428,12 @@ def main():
     ap.add_argument("--min_samples", type=int, default=2, help="Minimum number of samples that must meet the TPM threshold for a transcript to be retained (default: 2).")
     ap.add_argument("--filter_known", action='store_true', help="Also apply TPM filtering to known transcripts (by default only novel transcripts are filtered).")
     args = ap.parse_args()
-    # Ensure min_samples is at least 1
+    # Ensure min_samples is at least 2, unless explicitly set to 1
     if args.min_samples is None or args.min_samples < 1:
-        args.min_samples = 1
+        args.min_samples = 2
+    # Ensure min_tpm is at least 1, unless explicitly set to between 0 and 1
+    if args.min_tpm is None or args.min_tpm < 0.0:
+        args.min_tpm = 1.0
 
     print(f"reconcileBams.py version {__version__}")
 
@@ -426,12 +442,34 @@ def main():
     sample_names_map = {path: get_unique_sample_name(path, args.bams) for path in args.bams}
 
     print(f"\n=== Step 1: Collecting structures and assigning IDs (using {args.threads} threads)... ===")
-    raw_data = collect_and_assign_ids(
+    raw_data, total_reads_map = collect_and_assign_ids(
         args.bams, sample_names_map, known_gene_ids, known_tx_ids,
         args.id_tag, args.gene_tag, args.gene_prefix, args.tx_prefix, args.threads,
         args.exon_merge_distance
     )
     print(f"Initially processed {len(raw_data)} unique transcript structures.")
+
+    # Report total reads per BAM (sample) collected during initial scan
+    try:
+        print("\nPer-sample BAM read counts:")
+        total_all_bams = 0
+        for samp in sorted(total_reads_map.keys()):
+            n = total_reads_map.get(samp, 0)
+            total_all_bams += n
+            print(f"  - {samp}: {n} reads")
+        print(f"  - Total reads across all BAMs: {total_all_bams} reads")
+        # Append to summary report if it exists
+        try:
+            with open(report_file, "a") as f:
+                f.write('\n=== BAM read counts (per sample) ===\n')
+                for samp in sorted(total_reads_map.keys()):
+                    f.write(f"{samp}\t{total_reads_map.get(samp, 0)}\n")
+                f.write(f"TOTAL\t{total_all_bams}\n")
+        except Exception:
+            # If report file isn't yet available, we'll append later when it's created
+            pass
+    except Exception as e:
+        print(f"[WARN] Could not report BAM read counts: {e}", file=sys.stderr)
 
     print("\n=== Step 1.5: Consolidating KNOWN/ISM variants... ===")
     final_data, key_remap = consolidate_transcript_variants(raw_data, transcript_exon_blocks)
@@ -538,7 +576,6 @@ def main():
     abundance_file = os.path.join(args.outdir, f"{args.out_prefix}_abundance.tsv")
     output_data = {k: v for k, v in final_data.items() if v["transcript_id"] != "solo"}
 
-    # If requested, filter transcripts by minimum TPM across samples
     # By default only novel transcripts are filtered; set --filter_known to include KNOWN transcripts too.
     # A transcript is retained if it has TPM >= min_tpm in at least `min_samples` samples.
     if args.min_tpm and args.min_tpm > 0.0:
@@ -551,8 +588,9 @@ def main():
             to_filter = {k: v for k, v in output_data.items() if v.get('is_novel_transcript', True)}
             preserved = {k: v for k, v in output_data.items() if k not in to_filter}
 
-        # Simplified TPM: assume each read is one transcript (ignore transcript length).
-        # TPM per sample will be computed directly from counts: TPM = (count / sum_counts) * 1e6
+        # Compute TPM per transcript using total reads per sample collected earlier
+        # Formula: TPM = 1e6 * (count_for_transcript) / (total_reads_in_bam_for_sample)
+        # total_reads_map maps sample_name -> total reads in its BAM
         counts = {s: {} for s in unique_sample_names}
         for struct, data in to_filter.items():
             for s in unique_sample_names:
@@ -563,12 +601,16 @@ def main():
         from collections import Counter as _Counter
         pass_counts = _Counter()
         for s in unique_sample_names:
+            denom = total_reads_map.get(s, 0)
             sum_counts = sum(counts[s].values())
-            if sum_counts <= 0:
-                # No expression in this sample; skip
+            if denom <= 0:
+                # Fall back to sum of assigned counts if BAM counting failed or BAM empty
+                denom = sum_counts
+            if denom <= 0:
+                # No expression/read basis in this sample; skip
                 continue
             for struct, val in counts[s].items():
-                tpm = (val / sum_counts) * 1e6 if sum_counts > 0 else 0.0
+                tpm = (val / denom) * 1e6
                 if tpm >= args.min_tpm:
                     pass_counts[struct] += 1
 
