@@ -26,7 +26,7 @@ from multiprocessing import Pool, Manager
 from multiprocessing.managers import SyncManager
 import pysam
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 __author__ = "Elnaz A., Gemini, Ali M."
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Logging ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -149,13 +149,19 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
     overlapping_genes_same_strand = []
     overlapping_genes_opp_strand = []
 
+    # If worker_cdna is set, ignore strand when determining overlapping genes
+    global worker_cdna
     if read_chrom in genes:
         for gene_id, gene_data in genes[read_chrom].items():
             if read_start < gene_data['end'] and read_end > gene_data['start']:
-                if gene_data['strand'] == read_strand:
+                if 'worker_cdna' in globals() and worker_cdna:
+                    # treat all overlapping genes as same-strand for matching purposes
                     overlapping_genes_same_strand.append((gene_id, gene_data))
                 else:
-                    overlapping_genes_opp_strand.append((gene_id, gene_data))
+                    if gene_data['strand'] == read_strand:
+                        overlapping_genes_same_strand.append((gene_id, gene_data))
+                    else:
+                        overlapping_genes_opp_strand.append((gene_id, gene_data))
 
     if debug_read and debug_read_list is not None and read.query_name == debug_read:
         debug_lines = []
@@ -248,8 +254,17 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
                 classification = "NIC"
             else:
                 is_nic = True
-                strand_donors = all_donors.get(read_chrom, {}).get(read_strand, set())
-                strand_acceptors = all_acceptors.get(read_chrom, {}).get(read_strand, set())
+                # If CDNA mode is enabled, search donors/acceptors across both strands
+                if 'worker_cdna' in globals() and worker_cdna:
+                    strand_donors = set()
+                    strand_acceptors = set()
+                    for s in ('+', '-'):
+                        strand_donors |= all_donors.get(read_chrom, {}).get(s, set())
+                        strand_acceptors |= all_acceptors.get(read_chrom, {}).get(s, set())
+                else:
+                    strand_donors = all_donors.get(read_chrom, {}).get(read_strand, set())
+                    strand_acceptors = all_acceptors.get(read_chrom, {}).get(read_strand, set())
+
                 for junc in read_junctions:
                     read_d, read_a = (junc[0], junc[1])
                     donor = read_d if read_strand == '+' else read_a
@@ -257,7 +272,7 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
 
                     donor_found = any((donor + i) in strand_donors for i in range(-junc_tolerance, junc_tolerance + 1))
                     acceptor_found = any((acceptor + i) in strand_acceptors for i in range(-junc_tolerance, junc_tolerance + 1))
-                    
+
                     if not (donor_found and acceptor_found):
                         is_nic = False
                         break
@@ -282,7 +297,7 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
     return classification, final_gene_id, final_transcript_id, read
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Parallel Processing & I/O ~~~~~~~~~~~~~~~~~~~~~~
-def worker_init(annotation_data, header_dict, min_len, tolerance, debug_gene_id=None, debug_novel_type=None, debug_gene_list=None, debug_novel_list=None, debug_gene_info=None, debug_read_id=None, debug_read_list=None):
+def worker_init(annotation_data, header_dict, min_len, tolerance, debug_gene_id=None, debug_novel_type=None, debug_gene_list=None, debug_novel_list=None, debug_gene_info=None, debug_read_id=None, debug_read_list=None, cdna_flag=False):
     global worker_annotation, worker_header, worker_min_intron_len, worker_junc_tolerance, worker_debug_gene, worker_debug_novel_type, worker_debug_gene_list, worker_debug_novel_list, worker_debug_gene_info, worker_debug_read_id, worker_debug_read_list
     worker_annotation = annotation_data
     worker_header = pysam.AlignmentHeader.from_dict(header_dict)
@@ -295,6 +310,9 @@ def worker_init(annotation_data, header_dict, min_len, tolerance, debug_gene_id=
     worker_debug_gene_info = debug_gene_info
     worker_debug_read_id = debug_read_id
     worker_debug_read_list = debug_read_list
+    # set CDNA mode
+    global worker_cdna
+    worker_cdna = bool(cdna_flag)
 
 def process_chunk(read_strings):
     results = []
@@ -455,6 +473,8 @@ def main():
     parser.add_argument("--min_intron_len", type=int, default=30, help="Min intron length.")
     parser.add_argument("--junc_tolerance", type=int, default=2, help="Tolerance for matching splice junctions (e.g., 2 for +/- 2 bp).")
     parser.add_argument("--min_reads_for_novel", type=int, default=2, help="Minimum number of reads to support a novel gene or transcript (default: 2).")
+    parser.add_argument("-CDNA", "--cdna", action="store_true", dest="cdna", default=False, help="Ignore read strand when matching to reference/novel transcript models (treat as cDNA).")
+    parser.add_argument("-antisense", "--antisense", action="store_true", dest="antisense", default=False, help="Track antisense transcripts separately.")
     parser.add_argument("--debug_gene", type=str, default=None, help="Debug a single gene ID, writing output to a file.")
     parser.add_argument("--debug_novel_type", type=str, default=None, help="Output details for a specific novel class (e.g., NNC, NIC).")
     parser.add_argument("--debug_read", type=str, default=None, help="Debug all possible gene/transcript assignments for a given read ID.")
@@ -515,7 +535,7 @@ def main():
     pool = Pool(processes=args.threads, initializer=worker_init, initargs=(
         (genes, all_donors, all_acceptors), header_dict, args.min_intron_len, args.junc_tolerance,
         args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list, debug_gene_info,
-        args.debug_read, debug_read_log_list
+        args.debug_read, debug_read_log_list, args.cdna
     ))
 
     log_message("Submitting and processing reads...")
@@ -539,18 +559,32 @@ def main():
     novel_gene_loci_counts = Counter()
     novel_transcript_loci_counts = Counter()
     
+    cdna = args.cdna
     for _, prelim_gene_id, prelim_transcript_id, read_string in all_results:
         read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
         read_strand = '-' if read.is_reverse else '+'
         
         if prelim_gene_id == "NOVELG":
-            gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
+            if cdna:
+                gene_locus = (read.reference_name, read.reference_start, read.reference_end)
+            else:
+                gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
             novel_gene_loci_counts[gene_locus] += 1
             
         if prelim_transcript_id in ["NOVEL", "NOVELT"]:
             junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
-            gene_id_for_tx = prelim_gene_id if prelim_gene_id != "NOVELG" else (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            transcript_locus = (gene_id_for_tx, junctions, read_strand)
+            if prelim_gene_id != "NOVELG":
+                gene_id_for_tx = prelim_gene_id
+            else:
+                if cdna:
+                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end)
+                else:
+                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end, read_strand)
+            # transcript locus includes junctions; include strand only when not in cdna mode
+            if cdna:
+                transcript_locus = (gene_id_for_tx, junctions)
+            else:
+                transcript_locus = (gene_id_for_tx, junctions, read_strand)
             novel_transcript_loci_counts[transcript_locus] += 1
 
     valid_novel_gene_loci = {locus for locus, count in novel_gene_loci_counts.items() if count >= args.min_reads_for_novel}
@@ -580,7 +614,10 @@ def main():
         final_transcript_id = prelim_transcript_id
 
         if prelim_gene_id == "NOVELG":
-            gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
+            if cdna:
+                gene_locus = (read.reference_name, read.reference_start, read.reference_end)
+            else:
+                gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
             if gene_locus in valid_novel_gene_loci:
                 if gene_locus not in novel_gene_locus_to_id:
                     novel_gene_counter += 1
@@ -591,8 +628,17 @@ def main():
 
         if prelim_transcript_id in ["NOVEL", "NOVELT"]:
             junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
-            gene_id_for_tx = final_gene_id if final_gene_id != "NOVELG" else (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            transcript_locus = (gene_id_for_tx, junctions, read_strand)
+            if final_gene_id != "NOVELG":
+                gene_id_for_tx = final_gene_id
+            else:
+                if cdna:
+                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end)
+                else:
+                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end, read_strand)
+            if cdna:
+                transcript_locus = (gene_id_for_tx, junctions)
+            else:
+                transcript_locus = (gene_id_for_tx, junctions, read_strand)
             
             if transcript_locus in valid_novel_transcript_loci:
                 if transcript_locus not in novel_transcript_locus_to_id:
@@ -600,9 +646,21 @@ def main():
                     new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
                     novel_transcript_locus_to_id[transcript_locus] = new_id
                     exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
+                    # Force strand of novel model to the gene's strand when the gene is known
+                    model_strand = read_strand
+                    try:
+                        if final_gene_id != "NOVELG":
+                            chrom_genes = genes.get(read.reference_name, {})
+                            gene_info = chrom_genes.get(final_gene_id)
+                            if gene_info and 'strand' in gene_info:
+                                model_strand = gene_info['strand']
+                    except Exception:
+                        # keep read strand if anything unexpected occurs
+                        model_strand = read_strand
+
                     novel_models[transcript_locus] = {
                         'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
-                        'strand': read_strand, 'exons': exons
+                        'strand': model_strand, 'exons': exons
                     }
                 final_transcript_id = novel_transcript_locus_to_id[transcript_locus]
             else:
@@ -653,17 +711,42 @@ def main():
             for line in debug_read_log_list:
                 f.write(line + '\n')
 
+    # Optionally filter out Antisense transcripts from DOGME outputs
     generate_qc_report(abundance_counter, gene_id_to_name, qc_report_file)
     sort_and_index_bam(unsorted_bam_file, sorted_bam_file)
-    
+
     sample_name = os.path.basename(output_prefix)
-    generate_dogme_output(abundance_counter, transcript_info, novel_models, gene_id_to_name, output_prefix, sample_name)
+    # If antisense tracking is disabled, remove Antisense entries from abundance_counter
+    abundance_for_dogme = abundance_counter.copy()
+    if not args.antisense:
+        # Remove any abundance keys where classification == 'Antisense'
+        keys_to_remove = [k for k in abundance_for_dogme.keys() if k[2] == 'Antisense']
+        for k in keys_to_remove:
+            del abundance_for_dogme[k]
+
+    # Also, avoid exporting antisense novel models into the DOGME abundance/gtf when antisense is disabled.
+    # Filter novel_models to exclude antisense models unless args.antisense is True.
+    novel_models_for_export = {}
+    if args.antisense:
+        novel_models_for_export = novel_models
+    else:
+        for k, model in novel_models.items():
+            if model.get('strand') == '+' or model.get('strand') == '-':
+                # keep model only if it's not classified as Antisense in abundance (we already removed Antisense from abundance)
+                # Since novel_models don't themselves carry classification, we will include models whose gene_id is not an Antisense gene
+                # Build a lookup: if any abundance entry references this transcript id with Antisense, skip it
+                tx_id = model.get('id')
+                is_antisense_tx = any((g, t, c) for (g, t, c) in abundance_counter.keys() if t == tx_id and c == 'Antisense')
+                if not is_antisense_tx:
+                    novel_models_for_export[k] = model
+
+    generate_dogme_output(abundance_for_dogme, transcript_info, novel_models_for_export, gene_id_to_name, output_prefix, sample_name)
     dogme_gtf_file = f"{output_prefix}_dogme.gtf"
     log_message(f"Generating DOGME GTF file: {dogme_gtf_file}")
     with open(dogme_gtf_file, 'w') as f_out:
         with open(args.gtf, 'r') as f_in:
             f_out.write(f_in.read())
-        for model in novel_models.values():
+        for model in novel_models_for_export.values():
             attributes = f'gene_id "{model["gene_id"]}"; transcript_id "{model["id"]}";'
             f_out.write(f"\n{model['chrom']}\tDOGME\ttranscript\t{model['exons'][0][0]}\t{model['exons'][-1][1]}\t.\t{model['strand']}\t.\t{attributes}")
             for i, exon in enumerate(model['exons'], 1):
