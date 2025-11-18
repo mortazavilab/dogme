@@ -10,40 +10,21 @@ process softwareVTask {
     input:
     val version
     val modelPath
+
     output:
     path "${params.sample}.softwareVersion.txt"
     publishDir params.topDir, mode: 'copy'
+
     script:
     """
     . ${params.scriptEnv}
-    
-    echo "dogme $version" > "${params.sample}.softwareVersion.txt"
-    
-    doradoV=\$(dorado -v 2>&1)
-    echo "dorado \$doradoV" >> "${params.sample}.softwareVersion.txt"
-    samtoolsV=\$(samtools version |grep samtools)
-    echo \$samtoolsV >> "${params.sample}.softwareVersion.txt"
-    minimap2V=\$(minimap2 --version 2>&1)
-    echo "minimap2 \$minimap2V" >> "${params.sample}.softwareVersion.txt"
-    
-    if [[ "${params.readType}" == "DNA" ]] || [[ "${params.readType}" == "RNA" ]]; then
-    modkitV=\$(modkit --version 2>&1)
-    echo \$modkitV >> "${params.sample}.softwareVersion.txt"
-    fi
-    
-    if [[ "${params.readType}" == "CDNA" ]] || [[ "${params.readType}" == "RNA" ]]; then
-    kallistoV=\$(kallisto version)
-    echo \$kallistoV >> "${params.sample}.softwareVersion.txt"
-    bustoolsV=\$(bustools version)
-    echo \$bustoolsV >> "${params.sample}.softwareVersion.txt"
-    fi
-    
-    echo "Dorado Models Used: " >> "${params.sample}.softwareVersion.txt"
-    for folder in "${modelPath}"/*; do
-    fullfile=\$(basename "\$folder")
-    echo "\$fullfile" >> "${params.sample}.softwareVersion.txt"
-    done
-   
+
+    python ${projectDir}/scripts/software_versions.py \\
+        --version "${version}" \\
+        --read-type "${params.readType}" \\
+        --model-path "${modelPath}" \\
+        --output "${params.sample}.softwareVersion.txt" \\
+        --sample "${params.sample}"
     """
 }
 
