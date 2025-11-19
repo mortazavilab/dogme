@@ -273,11 +273,10 @@ process generateReport {
 
     publishDir params.topDir, mode: 'copy'
 
-    input:
-    path report_inputs // The directory containing bams/, annot/, etc.
-    path results
-    path openBeds
-
+input:
+    path report_inputs    // Required input
+    val results 
+    path openBeds 
     output:
     path "inventory_report.tsv", emit: inventory_report
     path "qc_summary.csv",       emit: qc_report
@@ -463,9 +462,7 @@ workflow mainWorkflow {
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         modificationWorkflow(mappedBams, theModel)
     } else {
-        placeholder1 = Channel.of(params.tmpDir)
-        placeholder2 = Channel.of(params.tmpDir)
-        generateReport(params.topDir, placeholder1, placeholder2)
+        generateReport(params.topDir, mappedBams, Channel.of(params.tmpDir))
     }
 }
 
@@ -502,9 +499,7 @@ workflow remapWorkflow {
     if (params.readType == 'RNA' || params.readType == 'DNA') {
         modificationWorkflow(mappedBams, theModel)
     } else {
-        placeholder1 = Channel.of(params.bamDir)
-        placeholder2 = Channel.of(params.tmpDir)
-        generateReport(params.topDir, placeholder1, placeholder2)
+        generateReport(params.topDir, mappedBams, Channel.of(params.tmpDir))
     }
 
     // Add annotation step for RNA or CDNA
