@@ -464,6 +464,10 @@ workflow mainWorkflow {
     } else {
         generateReport(params.topDir, mappedBams, Channel.of(params.tmpDir))
     }
+        // Add annotation step for RNA or CDNA
+    if (params.readType == 'RNA' || params.readType == 'CDNA') {
+        annotateRNAWorkflow(mappedBams)
+    }
 }
 
 workflow basecallWorkflow {
