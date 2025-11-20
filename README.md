@@ -137,3 +137,51 @@ nextflow run mortazavilab/dogme -entry annotateRNA -c yourconfig.conf
 ```
 
 This will produce annotated BAMs and QC summary files for each genome using the mapped bams.
+
+---
+
+## Container support (Singularity / Docker)
+
+Dogme includes a published container image to simplify reproducible runs and avoid installing all dependencies by hand:
+
+- Container image: ghcr.io/mortazavilab/dogme-pipeline:latest
+
+Two common modes:
+
+- Singularity / Apptainer (recommended on HPC)
+  - Enable in your Nextflow config: `singularity.enabled = true`
+  - Specify the container and bind mounts in `process` config (example shown in SingularityConfigExample.conf).
+  - GPU access: add `--nv` to `process.containerOptions` for GPU-enabled steps (dorado).
+  - Example snippet (from SingularityConfigExample.conf):
+    ```groovy
+    singularity {
+        enabled = true
+        autoMounts = true
+    }
+
+    process {
+        container = 'ghcr.io/mortazavilab/dogme-pipeline:latest'
+        containerOptions = "--bind /path/to/your/data1,/path/to/your/data2"
+        beforeScript = 'export PATH=/opt/conda/bin:$PATH'
+
+        withName: 'doradoTask' {
+            containerOptions = "--nv --bind /path/to/your/data1,/path/to/your/data2"
+        }
+    }
+    ```
+
+- Docker (local/workstation)
+  - If using Docker, disable Singularity in nextflow and set `process.container` to the same image. Use Docker runtime options via `process.containerOptions`, e.g. `--gpus all` for GPU support.
+  - Example:
+    ```
+    process {
+        container = 'ghcr.io/mortazavilab/dogme-pipeline:latest'
+        containerOptions = "--gpus all -v /path/to/your/data1:/path/to/your/data1 -v /path/to/your/data2:/path/to/your/data2"
+    }
+    ```
+  - Note: on Macs Docker behaves differently for GPU — GPUs are typically not available on macOS Docker; use a Linux/GPU host or Singularity on cluster for GPU tasks.
+
+Important notes:
+- If you run Dogme inside the container image above you do not need to install the listed tools on the host. If you choose not to use containers, you must install dorado, minimap2, samtools, modkit, kallisto, and bustools and ensure they are visible in the PATH (see dogme.profile).
+- Ensure any large shared storage mountpoints used by the pipeline (e.g. /path/to/your/data1, /path/to/your/data2) are bound into the container with `containerOptions` so the container can read/write data.
+- GPU-enabled steps (dorado / modkit GPU) require adding `--nv` for Singularity or `--gpus` for Docker and a host with GPUs + appropriate drivers.
