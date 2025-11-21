@@ -424,7 +424,7 @@ workflow modificationWorkflow {
     if (model_name.contains('6mA')) {
         consolidatedBedReport = consolidatedBeds.last()
     } else {
-        consolidatedBedReport = Channel.of(params.tmpDir)
+        consolidatedBedReport = nextflow.Channel.of(params.tmpDir)
     }
 
     generateReport(params.topDir, splitResultsReport, consolidatedBedReport)
@@ -437,10 +437,16 @@ workflow mainWorkflow {
     modelDirectory
     
     main: 
-    modelPath = doradoDownloadTask(modelDirectory, theModel)
+    // Only run dorado download if the model directory does not already exist
+    def modelPath
+    if (!new File(modelDirectory).exists()) {
+        modelPath = doradoDownloadTask(modelDirectory, theModel)
+    } else {
+        modelPath = nextflow.Channel.of(modelDirectory)
+    }
     softwareVTask(theVersion, modelPath)
-    def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
-    bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
+    def pod5_files_ch = nextflow.Channel.fromPath("${params.podDir}/*.pod5")
+    bamFiles = doradoTask(pod5_files_ch, modelPath, modelDirectory, theModel).collectFile()
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
     
@@ -451,9 +457,9 @@ workflow mainWorkflow {
         kallistoResults = kallistoTask(fastqFile)
     }
 
-    def genomeAnnotChannel = Channel.fromList(params.genome_annot_refs)
+    def genome_annot_ch = nextflow.Channel.fromList(params.genome_annot_refs)
 
-    unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
+    unmappedBams = unmappedbam.combine(genome_annot_ch).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
     minimapTask(unmappedBams)
@@ -479,8 +485,8 @@ workflow basecallWorkflow {
     main: 
     modelPath = doradoDownloadTask(modelDirectory, theModel)
     softwareVTask(theVersion, modelPath)
-    def pod5FilesChannel = Channel.fromPath("${params.podDir}/*.pod5")
-    bamFiles = doradoTask(pod5FilesChannel, modelPath, modelDirectory, theModel).collectFile()
+    def pod5_files_ch = nextflow.Channel.fromPath("${params.podDir}/*.pod5")
+    bamFiles = doradoTask(pod5_files_ch, modelPath, modelDirectory, theModel).collectFile()
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
 }
@@ -492,8 +498,8 @@ workflow remapWorkflow {
     modelDirectory
 
     main:
-    def unmappedbam = Channel.fromPath("${params.bamDir}/*.unmapped.bam")
-    def genomeAnnotChannel = Channel.fromList(params.genome_annot_refs)
+    def unmappedbam = nextflow.Channel.fromPath("${params.bamDir}/*.unmapped.bam")
+    def genomeAnnotChannel = nextflow.Channel.fromList(params.genome_annot_refs)
     unmappedBams = unmappedbam.combine(genomeAnnotChannel).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
     }
@@ -520,8 +526,8 @@ workflow reportsWorkflow {
     main:
     softwareVTask(theVersion, modelDirectory)
     
-    placeholder1 = Channel.of(params.bamDir)
-    placeholder2 = Channel.of(params.tmpDir)
+    placeholder1 = nextflow.Channel.of(params.bamDir)
+    placeholder2 = nextflow.Channel.of(params.tmpDir)
     generateReport(params.topDir, placeholder1, placeholder2)
 }
 
