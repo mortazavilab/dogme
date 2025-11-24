@@ -23,6 +23,65 @@ Dogme 1.2.2 updates `annotateRNA.py` to output the old optional TALON outputs as
 
 ---
 
+## What's New in 1.2.3
+
+The pipeline has continued to evolve after 1.2. Notable additions and changes in the post-1.2 releases:
+
+- Workflow / mapping
+  - Added a dedicated gtf -> junction BED conversion process (gtf_to_junction_bed.py) and automatic use of junction BEDs for spliced minimap2 alignment.
+  - Minimap2 spliced mapping uses a larger maximum intron size (`--splice-max 500000`) to better detect very long introns.
+  - New entry points / workflows to improve modularity and restartability: basecall, remap, reports, annotateRNA (start-from-mapped-BAMs), and the original main workflow.
+  - Improved grouping and handling of multi-genome runs: mapped BAMs are grouped by genome before annotation to ensure correct pairing with genome GTFs.
+
+- Modkit / open chromatin
+  - Per-chromosome open-chromatin calling for DNA (modkit 0.5+) with both per-chromosome bed and bedgraph outputs and downstream consolidation steps.
+  - Consolidation tasks combine per-chromosome bed/bg outputs into per-genome files:
+    - ${sample}.${genome}.m6Aopen.bed
+    - ${sample}.${genome}.m6Aopen.bg
+  - Modkit pileup call in the pipeline now accepts an optional threshold parameter (params.modkitFilterThreshold) and is used automatically when provided.
+
+- Reporting and QC
+  - generate_report.py now gathers additional per-BAM and per-FASTQ statistics into qc_summary.csv and inventory_report.tsv.
+  - Reports workflow allows generation of metadata/QC without re-running basecalling or mapping.
+
+- Annotation improvements
+  - annotateRNA.py remains the annotation engine; the pipeline now groups BAMs by genome and pairs them with the correct GTF before invoking the annotator.
+  - annotateRNATask supports a CDNA option and produces annotated BAMs, TALON outputs and per-genome QC CSVs by default.
+
+- Robustness / misc
+  - Improved handling of file naming, channel grouping, and tuple passing so multi-genome and multi-strand runs behave correctly.
+  - dorado model download is only run if the model directory does not already exist (avoids repeated downloads).
+  - Processes include retry/error strategies for robustness of long-running tasks.
+
+---
+
+## Dogme helper python script
+
+The following Python scripts are included or updated in the scripts/ directory. These are referenced by the Nextflow processes and are important to the new features:
+
+- scripts/software_versions.py
+  - Collects and records the software and model versions used for a run into ${sample}.softwareVersion.txt.
+
+- scripts/gtf_to_junction_bed.py
+  - Converts a GTF into a junction BED suitable for minimap2 spliced alignment. This is used automatically for RNA and CDNA mapping.
+
+- scripts/filterbed.py
+  - Filters modkit bed outputs by minimum coverage and per-mod thresholds (params.minCov and params.perMod).
+
+- scripts/annotateRNA.py
+  - Annotates mapped BAMs with transcript information. Now outputs TALON-compatible outputs and expanded QC CSVs by default. Accepts a -CDNA flag for cDNA-specific behavior.
+
+- scripts/generate_report.py
+  - Gathers inventory and QC metrics across outputs and generates inventory_report.tsv and qc_summary.csv (additional BAM/FASTQ stats added post-1.2.2).
+
+- scripts/reconcileBams.py
+  - Consolidates per-sample/TALON-style BAM/gene outputs and reports consolidated gene counts and reconciliation statistics (updated in 1.2.2 to correct gene counts).
+
+- scripts/report_bed_rep.py
+  - Compares per-sample modkit BED outputs across folders (replicates), merges plus/minus strands per sample and produces per-reference/modification comparison CSVs (e.g., Compare_GRCh38_m6A.csv).
+
+---
+
 ## Installation
 
 The current version of Dogme has been tested on SLURM clusters and on Macs with the following software versions: 
