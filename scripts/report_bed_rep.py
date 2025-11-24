@@ -4,6 +4,8 @@ import pandas as pd
 import argparse
 import gc
 
+__version__ = "1.0"
+
 def get_file_attributes(filename):
     """
     Parses filename to extract attributes.
@@ -139,6 +141,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Compare Samples/Replicates (Folder Independent)")
     parser.add_argument("input_folders", nargs='+', help="List of folders to scan for files")
     parser.add_argument("--output", help="Output folder", default="comparison_results")
+    print(f"report_bed_rep.py version {__version__}")
     
     args = parser.parse_args()
     process_replicates(args.input_folders, args.output)
