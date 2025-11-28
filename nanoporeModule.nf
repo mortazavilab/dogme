@@ -446,7 +446,7 @@ workflow mainWorkflow {
     }
     softwareVTask(theVersion, modelPath)
     def pod5_files_ch = nextflow.Channel.fromPath("${params.podDir}/*.pod5")
-    bamFiles = doradoTask(pod5_files_ch, modelPath, modelDirectory, theModel).collectFile()
+    bamFiles = doradoTask(pod5_files_ch, modelDirectory, modelPath, theModel).collectFile()
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
     
@@ -486,7 +486,7 @@ workflow basecallWorkflow {
     modelPath = doradoDownloadTask(modelDirectory, theModel)
     softwareVTask(theVersion, modelPath)
     def pod5_files_ch = nextflow.Channel.fromPath("${params.podDir}/*.pod5")
-    bamFiles = doradoTask(pod5_files_ch, modelPath, modelDirectory, theModel).collectFile()
+    bamFiles = doradoTask(pod5_files_ch, modelDirectory, modelPath, theModel).collectFile()
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
 }
