@@ -1,5 +1,5 @@
 # Toy Test Data for Dogme
-The following folders contain a config file and tiny pod5 files for testing 
+The following folders contain config files and tiny pod5 files for testing 
 Dogme. All of the data is from mouse samples and can be mapped to mm39 or 
 equivalent.
 
@@ -17,5 +17,5 @@ In order to run these, you will need to modify the config files to specify:
 - Where the kallisto-LR index and t2g files are
 
 The genomic fasta and gtf are copies of mm39 from the IGVF Consortium:
-https://api.data.igvf.org/reference-files/IGVFFI9282QLXO/@@download/IGVFFI9282QLXO.fasta.gz
-https://api.data.igvf.org/reference-files/IGVFFI4777RDZK/@@download/IGVFFI4777RDZK.gtf.gz
+- https://api.data.igvf.org/reference-files/IGVFFI9282QLXO/@@download/IGVFFI9282QLXO.fasta.gz
+- https://api.data.igvf.org/reference-files/IGVFFI4777RDZK/@@download/IGVFFI4777RDZK.gtf.gz
