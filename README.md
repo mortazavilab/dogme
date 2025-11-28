@@ -4,7 +4,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## What's New in Dogme 1.2
+## What's New in Dogme 1.2.X
 
 - **Modkit Open Chromatin support:**  
   New workflow and entry point to call open chromatin signal and regions in mapped BAMs with m6A modifications using `modkit 0.5` and higher. This produces both a bed files of regions and a bedgraph per genome.
@@ -15,43 +15,17 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 - **Increased Maximum Intron Size:**  
   The minimap2 mapping step now uses `--splice-max 500000` for improved detection of long introns in spliced alignments.
 - **Improved Workflow Modularity:**  
-  New entry points and modular workflows allow starting from mapped BAMs, remapping, or running only annotation/reporting as needed.
-- **Bug Fixes and Robustness:**  
-  Improved handling of file naming, tuple passing, and channel joining for multi-genome and multi-strand workflows.
-
-Dogme 1.2.2 updates `annotateRNA.py` to output the old optional TALON outputs as dogme defaults, updated `reconcileBams.py` to report the correct number of consolidated genes, and added additional statistics for bams and fastqs in the final qc summary. 
-
----
-
-## What's New in 1.2.3
-
-The pipeline has continued to evolve after 1.2. Notable additions and changes in the post-1.2 releases:
-
-- Workflow / mapping
-  - Added a dedicated gtf -> junction BED conversion process (gtf_to_junction_bed.py) and automatic use of junction BEDs for spliced minimap2 alignment.
-  - Minimap2 spliced mapping uses a larger maximum intron size (`--splice-max 500000`) to better detect very long introns.
-  - New entry points / workflows to improve modularity and restartability: basecall, remap, reports, annotateRNA (start-from-mapped-BAMs), and the original main workflow.
-  - Improved grouping and handling of multi-genome runs: mapped BAMs are grouped by genome before annotation to ensure correct pairing with genome GTFs.
-
-- Modkit / open chromatin
-  - Per-chromosome open-chromatin calling for DNA (modkit 0.5+) with both per-chromosome bed and bedgraph outputs and downstream consolidation steps.
-  - Consolidation tasks combine per-chromosome bed/bg outputs into per-genome files:
-    - ${sample}.${genome}.m6Aopen.bed
-    - ${sample}.${genome}.m6Aopen.bg
-  - Modkit pileup call in the pipeline now accepts an optional threshold parameter (params.modkitFilterThreshold) and is used automatically when provided.
-
-- Reporting and QC
+  New entry points / workflows to improve modularity and restartability: basecall, remap, reports, annotateRNA (start-from-mapped-BAMs), and the original main workflow.
+- **Reporting and QC:**
   - generate_report.py now gathers additional per-BAM and per-FASTQ statistics into qc_summary.csv and inventory_report.tsv.
   - Reports workflow allows generation of metadata/QC without re-running basecalling or mapping.
-
-- Annotation improvements
-  - annotateRNA.py remains the annotation engine; the pipeline now groups BAMs by genome and pairs them with the correct GTF before invoking the annotator.
-  - annotateRNATask supports a CDNA option and produces annotated BAMs, TALON outputs and per-genome QC CSVs by default.
-
-- Robustness / misc
+- **Bug Fixes and Robustness:**  
   - Improved handling of file naming, channel grouping, and tuple passing so multi-genome and multi-strand runs behave correctly.
   - dorado model download is only run if the model directory does not already exist (avoids repeated downloads).
   - Processes include retry/error strategies for robustness of long-running tasks.
+
+
+Dogme 1.2.2 updates `annotateRNA.py` to output the old optional TALON outputs as dogme defaults, updated `reconcileBams.py` to report the correct number of consolidated genes, and added additional statistics for bams and fastqs in the final qc summary. 
 
 ---
 
@@ -88,7 +62,7 @@ The current version of Dogme has been tested on SLURM clusters and on Macs with 
 
 | Software | Version |
 |----------|---------|
-| dorado   | 1.0     |
+| dorado   | 1.2     |
 | samtools | 1.15.1  |
 | minimap2 | 2.28    |
 | mod_kit  | 0.5     |
@@ -96,6 +70,8 @@ The current version of Dogme has been tested on SLURM clusters and on Macs with 
 | bustools | 0.43.2  |
 
 You must first install dorado, minimap2, samtools, modkit, kallisto, and bustools, and the latest version of nextflow and add their paths to the dogme.profile file in the launch directory or create an empty file of the same name. 
+
+Alternatively, you can use the provided Docker/Singularity image as described in the Container image section below.
 
 ---
 
