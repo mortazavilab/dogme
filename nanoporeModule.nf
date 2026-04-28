@@ -97,10 +97,12 @@ process minimapTask {
     else
         minimap2_opts="-ax lr:hq"
     fi
-    samtools fastq --threads 64 -T MM,ML,pt \${sample_name}.unmapped.bam | \
-    minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} - | \
-    samtools sort - --threads 64 > \${sample_name}.${genomeName}.bam \
+    samtools fastq --threads 64 -T MM,ML,pt \${sample_name}.unmapped.bam > \${sample_name}.fastq
+    minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} ${sample_name}.fastq > \${sample_name}.${genomeName}.sam
+    rm \${sample_name}.fastq 
+    samtools sort \${sample_name}.${genomeName}.sam --threads 64 > \${sample_name}.${genomeName}.bam \
     && samtools index -@ 64 \${sample_name}.${genomeName}.bam
+    rm \${sample_name}.${genomeName}.sam
     """
 }
 
@@ -200,20 +202,49 @@ process extractfastqTask {
     """
 }
 
-process kallistoTask {
+process makeKallistoRefsTask {
+    tag "${genomeName}"
     input:
-    path inputFile
+    tuple val(genomeName), val(genomeFasta), val(genomeGtf)
     output:
-    path "${params.sample}"
-    publishDir params.kallistoDir, mode: 'copy'
+    tuple val(genomeName), path("${genomeName}.cdna.fa"), path("${genomeName}.introns.fa"), path("${genomeName}.t2g"), val(genomeFasta)
+    publishDir "${params.kallistoDir}/refs", mode: 'copy'
     script:
     """
     . ${params.scriptEnv}
-    mkdir -p ${params.sample}
-    kallisto bus --long --threshold 0.8 -x bulk -i ${params.kallistoIndex} -t ${task.cpus} -o ${params.sample} "${inputFile}"
-    bustools sort -t ${task.cpus} ${params.sample}/output.bus -o ${params.sample}/sorted.bus
-    bustools count ${params.sample}/sorted.bus -t ${params.sample}/transcripts.txt  -e ${params.sample}/matrix.ec  -o ${params.sample}/count --cm -m -g ${params.t2g}
-    kallisto quant-tcc -t ${task.cpus} --long -P ONT ${params.sample}/count.mtx -i ${params.kallistoIndex} -f ${params.sample}/flens.txt -e ${params.sample}/count.ec.txt -o ${params.sample}
+    python ${projectDir}/scripts/makeKallistoRefs.py --name ${genomeName} --fasta ${genomeFasta} --gtf ${genomeGtf}
+    """
+}
+
+process kallistoIndexTask {
+    tag "${genomeName}"
+    input:
+    tuple val(genomeName), path(cdnaFa), path(intronsFa), path(t2gFile), val(genomeFasta)
+    output:
+    tuple val(genomeName), path("${genomeName}.idx"), path(t2gFile)
+    publishDir "${params.kallistoDir}/refs", mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    kallisto index -i ${genomeName}.idx -k 63 -d ${genomeFasta} ${cdnaFa} ${intronsFa}
+    """
+}
+
+process kallistoTask {
+    tag "${genomeName}"
+    input:
+    tuple path(inputFile), path(indexFile), path(t2gFile), val(genomeName)
+    output:
+    path "${params.sample}_${genomeName}"
+    publishDir "${params.kallistoDir}/${genomeName}", mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    mkdir -p ${params.sample}_${genomeName}
+    kallisto bus --long --threshold 0.8 -x bulk -i ${indexFile} -t ${task.cpus} -o ${params.sample}_${genomeName} "${inputFile}"
+    bustools sort -t ${task.cpus} ${params.sample}_${genomeName}/output.bus -o ${params.sample}_${genomeName}/sorted.bus
+    bustools count ${params.sample}_${genomeName}/sorted.bus -t ${params.sample}_${genomeName}/transcripts.txt  -e ${params.sample}_${genomeName}/matrix.ec  -o ${params.sample}_${genomeName}/count --cm -m -g ${t2gFile}
+    kallisto quant-tcc -t ${task.cpus} --long -P ONT ${params.sample}_${genomeName}/count.mtx -i ${indexFile} -f ${params.sample}_${genomeName}/flens.txt -e ${params.sample}_${genomeName}/count.ec.txt -o ${params.sample}_${genomeName}
     """
 }
 
@@ -430,6 +461,29 @@ workflow modificationWorkflow {
     generateReport(params.topDir, splitResultsReport, consolidatedBedReport)
 }
 
+workflow kallistoWorkflow {
+    take:
+    unmapped_bams_ch
+
+    main:
+    fastqFile = extractfastqTask(unmapped_bams_ch)
+
+    if (!params.kallistoIndex || !params.t2g) {
+        def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
+            .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
+        refFiles = makeKallistoRefsTask(kallisto_refs_ch)
+        indexFiles = kallistoIndexTask(refFiles)
+        kallistoInput = fastqFile.combine(indexFiles)
+            .map { fastq, genomeName, idx, t2g -> tuple(fastq, idx, t2g, genomeName) }
+        kallistoTask(kallistoInput)
+    } else {
+        kallistoInput = fastqFile.map { fastq ->
+            tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+        }
+        kallistoTask(kallistoInput)
+    }
+}
+
 workflow mainWorkflow {
     take:
     theVersion
@@ -442,7 +496,7 @@ workflow mainWorkflow {
     if (!new File(modelDirectory).exists()) {
         modelPath = doradoDownloadTask(modelDirectory, theModel)
     } else {
-        modelPath = nextflow.Channel.of(modelDirectory)
+        modelPath = nextflow.Channel.value(modelDirectory)
     }
     softwareVTask(theVersion, modelPath)
     def pod5_files_ch = nextflow.Channel.fromPath("${params.podDir}/*.pod5")
@@ -451,10 +505,7 @@ workflow mainWorkflow {
     unmappedbam = mergeBamsTask(fileCount)
     
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
-        // Run extractFastq
-        fastqFile = extractfastqTask(unmappedbam)
-        // Run kallistoTask using the extracted FASTQ file
-        kallistoResults = kallistoTask(fastqFile)
+        kallistoWorkflow(unmappedbam)
     }
 
     def genome_annot_ch = nextflow.Channel.fromList(params.genome_annot_refs)
@@ -514,6 +565,7 @@ workflow remapWorkflow {
 
     // Add annotation step for RNA or CDNA
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
+        kallistoWorkflow(unmappedbam)
         annotateRNAWorkflow(mappedBams)
     }
 }

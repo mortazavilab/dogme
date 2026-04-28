@@ -4,18 +4,20 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## What's New in Dogme 1.2.X
+## What's New in Dogme 1.3.0
 
 - **Modkit Open Chromatin support:**  
   New workflow and entry point to call open chromatin signal and regions in mapped BAMs with m6A modifications using `modkit 0.5` and higher. This produces both a bed files of regions and a bedgraph per genome.
 - **Transcript Annotation:**  
   New workflow entry point to annotate mapped BAMs with transcript information using `annotateRNA.py`. This produces annotated BAM files, TALON outputs and QC summary CSVs for each genome.
+- **Standalone kallisto entry point:**  
+  Added a `kallisto` entry point that starts from unmapped BAMs, extracts FASTQ, and runs the kallisto long-read quantification steps without re-running basecalling or remapping.
 - **Automatic GTF-to-Junction BED Conversion:**  
   The pipeline now automatically converts GTF files to junction BED files for minimap2 spliced alignment, ensuring correct handling of RNA and cDNA mapping.
 - **Increased Maximum Intron Size:**  
   The minimap2 mapping step now uses `--splice-max 500000` for improved detection of long introns in spliced alignments.
 - **Improved Workflow Modularity:**  
-  New entry points / workflows to improve modularity and restartability: basecall, remap, reports, annotateRNA (start-from-mapped-BAMs), and the original main workflow.
+  New entry points / workflows to improve modularity and restartability: basecall, remap, reports, kallisto (start-from-unmapped-BAMs), annotateRNA (start-from-mapped-BAMs), and the original main workflow.
 - **Reporting and QC:**
   - generate_report.py now gathers additional per-BAM and per-FASTQ statistics into qc_summary.csv and inventory_report.tsv.
   - Reports workflow allows generation of metadata/QC without re-running basecalling or mapping.
@@ -25,7 +27,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   - Processes include retry/error strategies for robustness of long-running tasks.
 
 
-Dogme 1.2.2 updates `annotateRNA.py` to output the old optional TALON outputs as dogme defaults, updated `reconcileBams.py` to report the correct number of consolidated genes, and added additional statistics for bams and fastqs in the final qc summary. 
+Dogme 1.3.0 also carries forward the 1.2.2 updates to `annotateRNA.py`, `reconcileBams.py`, and the expanded BAM/FASTQ reporting in the final QC summary.
 
 ---
 
@@ -79,7 +81,7 @@ Alternatively, you can use the provided Docker/Singularity image as described in
 
 Prerequisites include installing nextflow, using java/17 or better, installing modkit, installing minimap2, installing kallisto (compiled for long-reads), and installing bustools.
 By default, nextflow will use the launchdirectory as the place to create its workfolder.
-You must also create your own long-read kallisto index and t2g file for your genome of interest. You will need to add the path to the genome fasta, the transcriptome gtf, the kallisto index and the kallisto t2g file to your custom config file. 
+You can either provide pre-built kallisto index and t2g files in your config, or set `kallistoIndex` and `t2g` to `null` to have the pipeline auto-build them from the genome and GTF files in your `genome_annot_refs`. When auto-building, the pipeline will generate a kallisto index and t2g for each genome entry and run quantification against each one.
 
 ---
 
@@ -112,6 +114,9 @@ params {
      ]
     kallistoIndex = '/path/kallistoref/mm39GencM36_k63.idx'
     t2g = '/pathA/kallistoref/mm39GencM36_k63.t2g'
+    // Or set both to null to auto-build from genome_annot_refs:
+    // kallistoIndex = null
+    // t2g = null
     
     //default accuracy is sup
     accuracy = "sup"
@@ -157,6 +162,7 @@ By default, the pipeline will create several folders within the launch directory
 - **main**: Full pipeline from pod5 files to mapped/annotated/filtered outputs.
 - **basecall**: basecall pod5 files into unmapped bam file.
 - **remap**: Remap reads starting from unmapped BAM files.
+- **kallisto**: Extract FASTQ from unmapped BAM files and run the kallisto long-read quantification steps.
 - **modkit**: Run modification extraction and filtering.
 - **reports**: Generate summary reports only.
 - **annotateRNA**: Annotate mapped BAMs with transcript information and produce QC summaries.
@@ -172,6 +178,16 @@ nextflow run mortazavilab/dogme -entry annotateRNA -c yourconfig.conf
 ```
 
 This will produce annotated BAMs and QC summary files for each genome using the mapped bams.
+
+## Example: Running kallisto From Unmapped BAMs
+
+To run the extracted FASTQ plus kallisto quantification steps starting from existing unmapped BAMs:
+
+```
+nextflow run mortazavilab/dogme -entry kallisto -c yourconfig.conf
+```
+
+This will look for `*.unmapped.bam` files in `params.bamDir` and write kallisto outputs without re-running basecalling or remapping.
 
 ---
 

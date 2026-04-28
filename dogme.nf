@@ -8,6 +8,7 @@ include { remapWorkflow } from './nanoporeModule'
 include { basecallWorkflow } from './nanoporeModule'
 include { modificationWorkflow } from './nanoporeModule'
 include { annotateRNAWorkflow } from './nanoporeModule'
+include { kallistoWorkflow } from './nanoporeModule'
 
 def getParamOrDefault(param, defaultValue) {
     if (param == null || param == 'null' || param == 'undefined' || !param) {
@@ -18,7 +19,7 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
-def dogmeVersion = "1.2.3"
+def dogmeVersion = "1.3.0"
 def defaultModDir = "${launchDir}/doradoModels"
 
 // Define modificationsMap once here, to be reused across workflows
@@ -99,6 +100,11 @@ workflow annotateRNA {
 
 
     annotateRNAWorkflow(mappedBams)
+}
+
+workflow kallisto {
+    unmappedBams = Channel.fromPath("${params.bamDir}/*.unmapped.bam")
+    kallistoWorkflow(unmappedBams)
 }
 
 workflow reports {
