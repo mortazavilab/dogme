@@ -98,7 +98,7 @@ process minimapTask {
         minimap2_opts="-ax lr:hq"
     fi
     samtools fastq --threads 64 -T MM,ML,pt \${sample_name}.unmapped.bam > \${sample_name}.fastq
-    minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} ${sample_name}.fastq > \${sample_name}.${genomeName}.sam
+    minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} \${sample_name}.fastq > \${sample_name}.${genomeName}.sam
     rm \${sample_name}.fastq 
     samtools sort \${sample_name}.${genomeName}.sam --threads 64 > \${sample_name}.${genomeName}.bam \
     && samtools index -@ 64 \${sample_name}.${genomeName}.bam
