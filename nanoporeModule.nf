@@ -226,7 +226,8 @@ process kallistoIndexTask {
     script:
     """
     . ${params.scriptEnv}
-    kallisto index -i ${genomeName}.idx -k 63 -d ${genomeFasta} ${cdnaFa} ${intronsFa}
+    #kallisto index -t 8 -i ${genomeName}.idx -k 63 -d ${genomeFasta} ${cdnaFa} ${intronsFa}
+    kallisto index -t 8 -i ${genomeName}.idx -k 31 ${cdnaFa}
     """
 }
 
