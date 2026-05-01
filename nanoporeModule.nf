@@ -75,6 +75,19 @@ process mergeBamsTask {
     """
 }
 
+process samtoolsImportTask {
+    input:
+    path inputFastq
+    output:
+    path "${params.sample}.unmapped.bam"
+    publishDir params.bamDir, mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    samtools import -0 ${inputFastq} -o ${params.sample}.unmapped.bam
+    """
+}
+
 process minimapTask {
     input:
     tuple path(inputFile), val(genomeRef), val(annotRef), val(genomeName)
@@ -485,6 +498,29 @@ workflow kallistoWorkflow {
     }
 }
 
+workflow kallistoFastqWorkflow {
+    take:
+    fastq_ch
+
+    main:
+    fastqFile = fastq_ch
+
+    if (!params.kallistoIndex || !params.t2g) {
+        def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
+            .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
+        refFiles = makeKallistoRefsTask(kallisto_refs_ch)
+        indexFiles = kallistoIndexTask(refFiles)
+        kallistoInput = fastqFile.combine(indexFiles)
+            .map { fastq, genomeName, idx, t2g -> tuple(fastq, idx, t2g, genomeName) }
+        kallistoTask(kallistoInput)
+    } else {
+        kallistoInput = fastqFile.map { fastq ->
+            tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+        }
+        kallistoTask(kallistoInput)
+    }
+}
+
 workflow mainWorkflow {
     take:
     theVersion
@@ -569,6 +605,44 @@ workflow remapWorkflow {
         kallistoWorkflow(unmappedbam)
         annotateRNAWorkflow(mappedBams)
     }
+}
+
+workflow fastqCDNAWorkflow {
+    take:
+    theVersion
+    theModel
+    modelDirectory
+
+    main:
+    def fastqCandidates = [
+        new File(params.fastqDir, "${params.sample}.fastq.gz"),
+        new File(params.fastqDir, "${params.sample}.fastq")
+    ].findAll { it.exists() }
+
+    if (!fastqCandidates) {
+        throw new IllegalArgumentException("No FASTQ found for sample '${params.sample}' in ${params.fastqDir}. Expected ${params.sample}.fastq.gz or ${params.sample}.fastq")
+    }
+
+    if (fastqCandidates.size() > 1) {
+        def matches = fastqCandidates.collect { it.name }.join(', ')
+        throw new IllegalArgumentException("Multiple FASTQ inputs found for sample '${params.sample}' in ${params.fastqDir}: ${matches}")
+    }
+
+    def inputFastq = nextflow.Channel.fromPath(fastqCandidates[0].path, checkIfExists: true)
+    def unmappedbam = samtoolsImportTask(inputFastq)
+
+    kallistoFastqWorkflow(inputFastq)
+
+    def genome_annot_ch = nextflow.Channel.fromList(params.genome_annot_refs)
+
+    unmappedBams = unmappedbam.combine(genome_annot_ch).map { bam, ref ->
+        tuple(bam, ref.genome, ref.annot, ref.name)
+    }
+    minimapTask(unmappedBams)
+    def mappedBams = minimapTask.out.mapped_bams
+
+    generateReport(params.topDir, mappedBams, Channel.of(params.tmpDir))
+    annotateRNAWorkflow(mappedBams)
 }
 
 workflow reportsWorkflow {

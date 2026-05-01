@@ -9,6 +9,7 @@ include { basecallWorkflow } from './nanoporeModule'
 include { modificationWorkflow } from './nanoporeModule'
 include { annotateRNAWorkflow } from './nanoporeModule'
 include { kallistoWorkflow } from './nanoporeModule'
+include { fastqCDNAWorkflow } from './nanoporeModule'
 
 def getParamOrDefault(param, defaultValue) {
     if (param == null || param == 'null' || param == 'undefined' || !param) {
@@ -19,7 +20,7 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
-def dogmeVersion = "1.3.0"
+def dogmeVersion = "1.3.1"
 def defaultModDir = "${launchDir}/doradoModels"
 
 // Define modificationsMap once here, to be reused across workflows
@@ -56,6 +57,18 @@ workflow remap {
     theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
 
     results = remapWorkflow(dogmeVersion, theModel, modDir)
+}
+
+workflow fastqCDNA {
+    params.readType = 'CDNA'
+
+    modDir = getParamOrDefault(params.modDir, defaultModDir)
+    params.modDir = modDir
+
+    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
+
+    results = fastqCDNAWorkflow(dogmeVersion, theModel, modDir)
 }
 
 workflow modkit {

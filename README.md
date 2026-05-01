@@ -4,8 +4,10 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## What's New in Dogme 1.3.0
+## What's New in Dogme 1.3.1
 
+- **fastq CDNA support**: 
+  New workflow and entry point to start from an existing CDNA FASTQ, create an unmapped BAM, run minimap2 and kallisto in parallel, then annotate the mapped BAMs.
 - **Modkit Open Chromatin support:**  
   New workflow and entry point to call open chromatin signal and regions in mapped BAMs with m6A modifications using `modkit 0.5` and higher. This produces both a bed files of regions and a bedgraph per genome.
 - **Transcript Annotation:**  
@@ -27,7 +29,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   - Processes include retry/error strategies for robustness of long-running tasks.
 
 
-Dogme 1.3.0 also carries forward the 1.2.2 updates to `annotateRNA.py`, `reconcileBams.py`, and the expanded BAM/FASTQ reporting in the final QC summary.
+Dogme 1.3.1 also carries forward the 1.2.2 updates to `annotateRNA.py`, `reconcileBams.py`, and the expanded BAM/FASTQ reporting in the final QC summary.
 
 ---
 
@@ -162,6 +164,7 @@ By default, the pipeline will create several folders within the launch directory
 - **main**: Full pipeline from pod5 files to mapped/annotated/filtered outputs.
 - **basecall**: basecall pod5 files into unmapped bam file.
 - **remap**: Remap reads starting from unmapped BAM files.
+- **fastqCDNA**: Start from an existing CDNA FASTQ, create an unmapped BAM, run minimap2 and kallisto in parallel, then annotate the mapped BAMs.
 - **kallisto**: Extract FASTQ from unmapped BAM files and run the kallisto long-read quantification steps.
 - **modkit**: Run modification extraction and filtering.
 - **reports**: Generate summary reports only.
@@ -188,6 +191,16 @@ nextflow run mortazavilab/dogme -entry kallisto -c yourconfig.conf
 ```
 
 This will look for `*.unmapped.bam` files in `params.bamDir` and write kallisto outputs without re-running basecalling or remapping.
+
+## Example: Running fastqCDNA From an Existing CDNA FASTQ
+
+To start from a pre-existing CDNA FASTQ, place exactly one file named `${params.sample}.fastq.gz` or `${params.sample}.fastq` in `params.fastqDir` and run:
+
+```
+nextflow run mortazavilab/dogme -entry fastqCDNA -c yourconfig.conf
+```
+
+This entry creates `${params.sample}.unmapped.bam` in `params.bamDir`, runs kallisto in parallel with minimap2, and then annotates the mapped BAM outputs.
 
 ---
 
