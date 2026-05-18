@@ -20,7 +20,7 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
-def dogmeVersion = "1.3.1"
+def dogmeVersion = "1.3.2"
 def defaultModDir = "${launchDir}/doradoModels"
 
 // Define modificationsMap once here, to be reused across workflows

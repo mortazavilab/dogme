@@ -26,7 +26,7 @@ from multiprocessing import Pool, Manager
 from multiprocessing.managers import SyncManager
 import pysam
 
-__version__ = "1.2.3"
+__version__ = "1.3.2"
 __author__ = "Elnaz A., Gemini, Ali M."
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Logging ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -524,7 +524,6 @@ def main():
     stats_file = f"{output_prefix}_final_stats.csv"
 
     log_message(f"Temporary unsorted BAM will be written to: {unsorted_bam_file}")
-    output_bam = pysam.AlignmentFile(unsorted_bam_file, "wb", template=input_bam)
     header_dict = input_bam.header.to_dict()
 
     manager = Manager()
@@ -538,29 +537,22 @@ def main():
         args.debug_read, debug_read_log_list, args.cdna
     ))
 
-    log_message("Submitting and processing reads...")
+    log_message("First pass: submitting and processing reads for novel locus counting...")
     main_process_header = pysam.AlignmentHeader.from_dict(header_dict)
     chunk_generator = read_bam_in_chunks(input_bam, args.chunk_size, args.num_reads, debug_region)
     total_reads_processed = 0
     next_progress_report = 100000
 
-    all_results = []
-    for chunk_results in pool.imap_unordered(process_chunk, chunk_generator):
-        all_results.extend(chunk_results)
-        total_reads_processed += len(chunk_results)
-        if not args.debug_gene and total_reads_processed >= next_progress_report:
-            log_message(f"Processed {total_reads_processed:,} reads...")
-            next_progress_report += 100000
-    pool.close()
-    pool.join()
-    
-    log_message("Aggregating results and filtering novel models...")
-    
     novel_gene_loci_counts = Counter()
     novel_transcript_loci_counts = Counter()
     
     cdna = args.cdna
-    for _, prelim_gene_id, prelim_transcript_id, read_string in all_results:
+    # FIRST PASS: Count novel loci WITHOUT storing all results in memory
+    for chunk_results in pool.imap_unordered(process_chunk, chunk_generator):
+        for _, prelim_gene_id, prelim_transcript_id, read_string in chunk_results:
+            total_reads_processed += 1
+            read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
+            read_strand = '-' if read.is_reverse else '+'
         read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
         read_strand = '-' if read.is_reverse else '+'
         
@@ -580,20 +572,35 @@ def main():
                     gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end)
                 else:
                     gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            # transcript locus includes junctions; include strand only when not in cdna mode
             if cdna:
                 transcript_locus = (gene_id_for_tx, junctions)
             else:
                 transcript_locus = (gene_id_for_tx, junctions, read_strand)
             novel_transcript_loci_counts[transcript_locus] += 1
-
+        
+    log_message("First pass: Processed {total_reads_processed:,} reads...")
+    
+    pool.close()
+    pool.join()
+    
+    input_bam.close()
+    
     valid_novel_gene_loci = {locus for locus, count in novel_gene_loci_counts.items() if count >= args.min_reads_for_novel}
     valid_novel_transcript_loci = {locus for locus, count in novel_transcript_loci_counts.items() if count >= args.min_reads_for_novel}
 
     log_message(f"Identified {len(novel_gene_loci_counts)} potential novel gene loci; {len(valid_novel_gene_loci)} passed the {args.min_reads_for_novel}-read threshold.")
     log_message(f"Identified {len(novel_transcript_loci_counts)} potential novel transcript structures; {len(valid_novel_transcript_loci)} passed the threshold.")
     
-    log_message("Writing final annotated BAM file...")
+    # SECOND PASS: Write output BAM and accumulate statistics (process incrementally without storing all results)
+    log_message("Second pass: writing final annotated BAM file...")
+    input_bam_2 = pysam.AlignmentFile(args.bam, "rb")
+    output_bam = pysam.AlignmentFile(unsorted_bam_file, "wb", template=input_bam_2)
+    pool_2 = Pool(processes=args.threads, initializer=worker_init, initargs=(
+        (genes, all_donors, all_acceptors), header_dict, args.min_intron_len, args.junc_tolerance,
+        args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list, debug_gene_info,
+        args.debug_read, debug_read_log_list, args.cdna
+    ))
+    
     abundance_counter = Counter()
     classification_counter = Counter()
     known_genes_found = {}
@@ -605,83 +612,93 @@ def main():
     novel_gene_counter = 0
     novel_transcript_counter = 0
     solo_read_counter = 0
-
-    for classification, prelim_gene_id, prelim_transcript_id, read_string in all_results:
-        read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
-        read_strand = '-' if read.is_reverse else '+'
-        
-        final_gene_id = prelim_gene_id
-        final_transcript_id = prelim_transcript_id
-
-        if prelim_gene_id == "NOVELG":
-            if cdna:
-                gene_locus = (read.reference_name, read.reference_start, read.reference_end)
-            else:
-                gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            if gene_locus in valid_novel_gene_loci:
-                if gene_locus not in novel_gene_locus_to_id:
-                    novel_gene_counter += 1
-                    novel_gene_locus_to_id[gene_locus] = f"{args.novel_prefix}G{novel_gene_counter:06d}"
-                final_gene_id = novel_gene_locus_to_id[gene_locus]
-            else:
-                continue
-
-        if prelim_transcript_id in ["NOVEL", "NOVELT"]:
-            junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
-            if final_gene_id != "NOVELG":
-                gene_id_for_tx = final_gene_id
-            else:
-                if cdna:
-                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end)
-                else:
-                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            if cdna:
-                transcript_locus = (gene_id_for_tx, junctions)
-            else:
-                transcript_locus = (gene_id_for_tx, junctions, read_strand)
+    total_reads_written = 0
+    next_write_report = 100000
+    
+    chunk_generator_2 = read_bam_in_chunks(input_bam_2, args.chunk_size, args.num_reads, debug_region)
+    for chunk_results in pool_2.imap_unordered(process_chunk, chunk_generator_2):
+        for classification, prelim_gene_id, prelim_transcript_id, read_string in chunk_results:
+            total_reads_written += 1
+            read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
+            read_strand = '-' if read.is_reverse else '+'
             
-            if transcript_locus in valid_novel_transcript_loci:
-                if transcript_locus not in novel_transcript_locus_to_id:
-                    novel_transcript_counter += 1
-                    new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
-                    novel_transcript_locus_to_id[transcript_locus] = new_id
-                    exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
-                    # Force strand of novel model to the gene's strand when the gene is known
-                    model_strand = read_strand
-                    try:
-                        if final_gene_id != "NOVELG":
-                            chrom_genes = genes.get(read.reference_name, {})
-                            gene_info = chrom_genes.get(final_gene_id)
-                            if gene_info and 'strand' in gene_info:
-                                model_strand = gene_info['strand']
-                    except Exception:
-                        # keep read strand if anything unexpected occurs
+            final_gene_id = prelim_gene_id
+            final_transcript_id = prelim_transcript_id
+
+            if prelim_gene_id == "NOVELG":
+                if cdna:
+                    gene_locus = (read.reference_name, read.reference_start, read.reference_end)
+                else:
+                    gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
+                if gene_locus in valid_novel_gene_loci:
+                    if gene_locus not in novel_gene_locus_to_id:
+                        novel_gene_counter += 1
+                        novel_gene_locus_to_id[gene_locus] = f"{args.novel_prefix}G{novel_gene_counter:06d}"
+                    final_gene_id = novel_gene_locus_to_id[gene_locus]
+                else:
+                    continue
+
+            if prelim_transcript_id in ["NOVEL", "NOVELT"]:
+                junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
+                if final_gene_id != "NOVELG":
+                    gene_id_for_tx = final_gene_id
+                else:
+                    if cdna:
+                        gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end)
+                    else:
+                        gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end, read_strand)
+                if cdna:
+                    transcript_locus = (gene_id_for_tx, junctions)
+                else:
+                    transcript_locus = (gene_id_for_tx, junctions, read_strand)
+                
+                if transcript_locus in valid_novel_transcript_loci:
+                    if transcript_locus not in novel_transcript_locus_to_id:
+                        novel_transcript_counter += 1
+                        new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
+                        novel_transcript_locus_to_id[transcript_locus] = new_id
+                        exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
+                        # Force strand of novel model to the gene's strand when the gene is known
                         model_strand = read_strand
+                        try:
+                            if final_gene_id != "NOVELG":
+                                chrom_genes = genes.get(read.reference_name, {})
+                                gene_info = chrom_genes.get(final_gene_id)
+                                if gene_info and 'strand' in gene_info:
+                                    model_strand = gene_info['strand']
+                        except Exception:
+                            # keep read strand if anything unexpected occurs
+                            model_strand = read_strand
 
-                    novel_models[transcript_locus] = {
-                        'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
-                        'strand': model_strand, 'exons': exons
-                    }
-                final_transcript_id = novel_transcript_locus_to_id[transcript_locus]
-            else:
-                final_transcript_id = "solo"
-                solo_read_counter += 1
-        
-        read.set_tag("TT", classification)
-        read.set_tag("GX", final_gene_id)
-        read.set_tag("TX", final_transcript_id)
-        output_bam.write(read)
+                        novel_models[transcript_locus] = {
+                            'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
+                            'strand': model_strand, 'exons': exons
+                        }
+                    final_transcript_id = novel_transcript_locus_to_id[transcript_locus]
+                else:
+                    final_transcript_id = "solo"
+                    solo_read_counter += 1
+            
+            read.set_tag("TT", classification)
+            read.set_tag("GX", final_gene_id)
+            read.set_tag("TX", final_transcript_id)
+            output_bam.write(read)
 
-        if prelim_gene_id != "NOVELG":
-            known_genes_found[final_gene_id] = True
-        if classification in ["Known", "ISM"]:
-            known_transcripts_found[final_transcript_id] = True
-        
-        abundance_key = (final_gene_id, final_transcript_id, classification)
-        abundance_counter.update([abundance_key])
-        classification_counter.update([classification])
+            if prelim_gene_id != "NOVELG":
+                known_genes_found[final_gene_id] = True
+            if classification in ["Known", "ISM"]:
+                known_transcripts_found[final_transcript_id] = True
+            
+            abundance_key = (final_gene_id, final_transcript_id, classification)
+            abundance_counter.update([abundance_key])
+            classification_counter.update([classification])
+            
+            if not args.debug_gene and total_reads_written % 100000 == 0:
+                log_message(f"Second pass: Written {total_reads_written:,} reads...")
 
-    input_bam.close()
+    pool_2.close()
+    pool_2.join()
+    input_bam_2.close()
     output_bam.close()
     
     if args.debug_gene and debug_gene_log_list:

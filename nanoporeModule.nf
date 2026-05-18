@@ -380,6 +380,7 @@ process annotateRNATask {
     path "*.annotated.ba*"
     path "*.csv"
     path "*_dogme*"
+    path "*.log"
     publishDir params.annotDir, mode: 'copy'
     script:
     """
@@ -396,7 +397,7 @@ process annotateRNATask {
         --gtf ${gtf} \
         --out ${bam.simpleName}.${genomeName} \
         --threads ${task.cpus} \$cdna_opt \
-        --novel_prefix "${bam.simpleName}_${genomeName}" 2> annotateRNA.log
+        --novel_prefix "${bam.simpleName}_${genomeName}" 2> ${bam.simpleName}.${genomeName}.log
     """
 }
 

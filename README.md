@@ -4,7 +4,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## What's New in Dogme 1.3.1
+## What's New in Dogme 1.3.X
 
 - **fastq CDNA support**: 
   New workflow and entry point to start from an existing CDNA FASTQ, create an unmapped BAM, run minimap2 and kallisto in parallel, then annotate the mapped BAMs.
@@ -24,6 +24,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   - generate_report.py now gathers additional per-BAM and per-FASTQ statistics into qc_summary.csv and inventory_report.tsv.
   - Reports workflow allows generation of metadata/QC without re-running basecalling or mapping.
 - **Bug Fixes and Robustness:**  
+  - Lower memory footprint for annotateRNA.py using 2-pass processing first to count then to write the bam file.
   - Improved handling of file naming, channel grouping, and tuple passing so multi-genome and multi-strand runs behave correctly.
   - dorado model download is only run if the model directory does not already exist (avoids repeated downloads).
   - Processes include retry/error strategies for robustness of long-running tasks.
