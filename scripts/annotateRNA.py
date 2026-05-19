@@ -20,14 +20,16 @@ import time
 import re
 import os
 import csv
+import resource
 import subprocess
-from collections import defaultdict, Counter
-from multiprocessing import Pool, Manager
+from collections import defaultdict, Counter, deque
+from multiprocessing import get_context
 from multiprocessing.managers import SyncManager
 import pysam
 
-__version__ = "1.2.3"
+__version__ = "1.3.2"
 __author__ = "Elnaz A., Gemini, Ali M."
+CLASSIFICATION_ORDER = ("Known", "ISM", "NIC", "NNC", "Antisense", "Intergenic")
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Logging ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def log_message(message, level="INFO"):
@@ -110,7 +112,32 @@ def parse_gtf(gtf_file):
                         gene['acceptors'].add(acceptor)
 
     log_message("Finished parsing annotation.")
-    return genes, all_donors, all_acceptors, gene_id_to_name, transcript_info
+    
+    # Convert all defaultdicts with lambda functions to regular nested dicts (required for multiprocessing pickling)
+    # Convert genes structure: genes[chrom][gene_id]['transcripts'] from defaultdict to dict
+    genes_dict = {}
+    for chrom, chrom_genes in genes.items():
+        genes_dict[chrom] = {}
+        for gene_id, gene_data in chrom_genes.items():
+            genes_dict[chrom][gene_id] = {
+                'strand': gene_data['strand'],
+                'start': gene_data['start'],
+                'end': gene_data['end'],
+                'donors': gene_data['donors'],
+                'acceptors': gene_data['acceptors'],
+                'transcripts': dict(gene_data['transcripts'])  # Convert defaultdict to regular dict
+            }
+    
+    # Convert all_donors and all_acceptors defaultdicts to regular dicts
+    all_donors_dict = {}
+    for chrom, strand_dict in all_donors.items():
+        all_donors_dict[chrom] = dict(strand_dict)
+    
+    all_acceptors_dict = {}
+    for chrom, strand_dict in all_acceptors.items():
+        all_acceptors_dict[chrom] = dict(strand_dict)
+    
+    return genes_dict, all_donors_dict, all_acceptors_dict, gene_id_to_name, transcript_info
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Core Annotation Logic ~~~~~~~~~~~~~~~~~~~~~~~~~~
@@ -131,6 +158,130 @@ def get_read_splice_junctions(read, min_intron_len=10):
         if intron_length >= min_intron_len:
             junctions.append((donor, acceptor))
     return junctions
+
+def get_read_strand(read):
+    return '-' if read.is_reverse else '+'
+
+def get_pool_context():
+    if sys.platform.startswith('linux'):
+        try:
+            return get_context('fork')
+        except ValueError:
+            pass
+    return get_context()
+
+def bam_supports_regional_fetch(bam_file):
+    try:
+        bam_file.check_index()
+        return True
+    except (AttributeError, ValueError):
+        return False
+
+def get_processing_regions(bam_file, debug_region=None):
+    if debug_region:
+        return [debug_region]
+    if bam_supports_regional_fetch(bam_file):
+        return [{'contig': contig} for contig in bam_file.references]
+    return [None]
+
+def get_region_label(region):
+    if not region:
+        return 'whole BAM'
+    contig = region.get('contig', 'unknown')
+    start = region.get('start')
+    end = region.get('end')
+    if start is not None or end is not None:
+        start_label = (start + 1) if start is not None else 1
+        end_label = end if end is not None else '?'
+        return f"{contig}:{start_label}-{end_label}"
+    return contig
+
+def get_annotation_subset(annotation_data, region):
+    genes, all_donors, all_acceptors = annotation_data
+    if not region or 'contig' not in region:
+        return annotation_data
+
+    chrom = region['contig']
+    return (
+        {chrom: genes.get(chrom, {})},
+        {chrom: all_donors.get(chrom, {})},
+        {chrom: all_acceptors.get(chrom, {})},
+    )
+
+def get_gene_locus(read, read_strand, cdna_flag):
+    if cdna_flag:
+        return (read.reference_name, read.reference_start, read.reference_end)
+    return (read.reference_name, read.reference_start, read.reference_end, read_strand)
+
+def get_transcript_locus(read, gene_id_for_tx, read_strand, min_intron_len, cdna_flag):
+    junctions = tuple(get_read_splice_junctions(read, min_intron_len))
+    if cdna_flag:
+        return (gene_id_for_tx, junctions)
+    return (gene_id_for_tx, junctions, read_strand)
+
+def get_peak_rss_mb():
+    rss = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss
+    if sys.platform == 'darwin':
+        return rss / (1024 * 1024)
+    return rss / 1024
+
+def get_current_rss_mb():
+    if sys.platform.startswith('linux'):
+        try:
+            with open('/proc/self/status', 'r') as handle:
+                for line in handle:
+                    if line.startswith('VmRSS:'):
+                        return int(line.split()[1]) / 1024
+        except OSError:
+            pass
+    return get_peak_rss_mb()
+
+def get_pid_rss_mb(pid):
+    if not sys.platform.startswith('linux') or pid is None:
+        return None
+    try:
+        with open(f'/proc/{pid}/status', 'r') as handle:
+            for line in handle:
+                if line.startswith('VmRSS:'):
+                    return int(line.split()[1]) / 1024
+    except OSError:
+        return None
+    return None
+
+def get_pool_rss_mb(pool):
+    total_rss_mb = 0.0
+    saw_worker = False
+    for proc in getattr(pool, '_pool', []):
+        if proc is None or not proc.is_alive():
+            continue
+        worker_rss_mb = get_pid_rss_mb(proc.pid)
+        if worker_rss_mb is None:
+            continue
+        total_rss_mb += worker_rss_mb
+        saw_worker = True
+    return total_rss_mb if saw_worker else None
+
+def format_memory_mb(value):
+    if value is None:
+        return 'NA'
+    return f'{value:.1f}'
+
+def format_elapsed_seconds(value):
+    return f'{value:.2f}'
+
+def format_classification_summary(counter):
+    summary_parts = []
+    seen = set()
+    for classification in CLASSIFICATION_ORDER:
+        count = counter.get(classification, 0)
+        if count:
+            summary_parts.append(f'{classification}={count:,}')
+            seen.add(classification)
+    for classification in sorted(counter):
+        if classification in seen:
+            continue
+        summary_parts.append(f'{classification}={counter[classification]:,}')
+    return ', '.join(summary_parts) if summary_parts else 'none'
 
 def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=None, debug_list=None, debug_read=None, debug_read_list=None):
     """
@@ -314,7 +465,44 @@ def worker_init(annotation_data, header_dict, min_len, tolerance, debug_gene_id=
     global worker_cdna
     worker_cdna = bool(cdna_flag)
 
-def process_chunk(read_strings):
+def append_debug_novel_log(read, classification, gene_id, transcript_id):
+    if worker_debug_novel_type and classification == worker_debug_novel_type and worker_debug_novel_list is not None:
+        junctions = get_read_splice_junctions(read, worker_min_intron_len)
+        debug_line = f"Read:{read.query_name}\tGene:{gene_id}\tTranscript:{transcript_id}\tJunctions:{junctions}"
+        worker_debug_novel_list.append(debug_line)
+
+def process_chunk_novel_loci(read_strings):
+    novel_gene_counts = Counter()
+    novel_transcript_counts = Counter()
+    for read_string in read_strings:
+        read = pysam.AlignedSegment.fromstring(read_string, worker_header)
+        result = classify_read(
+            read, worker_annotation, worker_min_intron_len, worker_junc_tolerance,
+            worker_debug_gene, worker_debug_gene_list,
+            worker_debug_read_id if 'worker_debug_read_id' in globals() else None,
+            worker_debug_read_list if 'worker_debug_read_list' in globals() else None
+        )
+        if result:
+            classification, gene_id, transcript_id, _ = result
+            read_strand = get_read_strand(read)
+
+            if gene_id == "NOVELG":
+                novel_gene_locus = get_gene_locus(read, read_strand, worker_cdna)
+                novel_gene_counts[novel_gene_locus] += 1
+            else:
+                novel_gene_locus = None
+
+            if transcript_id in ["NOVEL", "NOVELT"]:
+                gene_id_for_tx = gene_id if gene_id != "NOVELG" else novel_gene_locus
+                novel_transcript_locus = get_transcript_locus(
+                    read, gene_id_for_tx, read_strand, worker_min_intron_len, worker_cdna
+                )
+                novel_transcript_counts[novel_transcript_locus] += 1
+
+            append_debug_novel_log(read, classification, gene_id, transcript_id)
+    return novel_gene_counts, novel_transcript_counts
+
+def process_chunk_annotations(read_strings):
     results = []
     for read_string in read_strings:
         read = pysam.AlignedSegment.fromstring(read_string, worker_header)
@@ -325,13 +513,23 @@ def process_chunk(read_strings):
             worker_debug_read_list if 'worker_debug_read_list' in globals() else None
         )
         if result:
-            classification, gene_id, transcript_id, annotated_read = result
-            results.append((classification, gene_id, transcript_id, annotated_read.to_string()))
-            if worker_debug_novel_type and classification == worker_debug_novel_type:
-                junctions = get_read_splice_junctions(read, worker_min_intron_len)
-                debug_line = f"Read:{read.query_name}\tGene:{gene_id}\tTranscript:{transcript_id}\tJunctions:{junctions}"
-                worker_debug_novel_list.append(debug_line)
+            classification, gene_id, transcript_id, _ = result
+            results.append((classification, gene_id, transcript_id))
+            append_debug_novel_log(read, classification, gene_id, transcript_id)
+        else:
+            results.append(None)
     return results
+
+def iter_pool_tasks_bounded(pool, func, chunk_generator, max_inflight):
+    # Keep the number of queued BAM chunks bounded so the parent cannot buffer the entire file.
+    pending = deque()
+    for read_chunk in chunk_generator:
+        pending.append((read_chunk, pool.apply_async(func, (read_chunk,))))
+        if len(pending) >= max_inflight:
+            yield pending.popleft()
+
+    while pending:
+        yield pending.popleft()
 
 def read_bam_in_chunks(bam_file, chunk_size, max_reads=None, region=None):
     read_iterator = bam_file.fetch(**region) if region else bam_file.fetch(until_eof=True)
@@ -524,76 +722,42 @@ def main():
     stats_file = f"{output_prefix}_final_stats.csv"
 
     log_message(f"Temporary unsorted BAM will be written to: {unsorted_bam_file}")
-    output_bam = pysam.AlignmentFile(unsorted_bam_file, "wb", template=input_bam)
     header_dict = input_bam.header.to_dict()
 
-    manager = Manager()
-    debug_gene_log_list = manager.list() if args.debug_gene else None
-    debug_novel_log_list = manager.list() if args.debug_novel_type else None
-    debug_read_log_list = manager.list() if args.debug_read else None
+    pool_context = get_pool_context()
+    if sys.platform.startswith('linux'):
+        log_message(f"Using multiprocessing start method: {pool_context.get_start_method()}")
 
-    pool = Pool(processes=args.threads, initializer=worker_init, initargs=(
-        (genes, all_donors, all_acceptors), header_dict, args.min_intron_len, args.junc_tolerance,
-        args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list, debug_gene_info,
-        args.debug_read, debug_read_log_list, args.cdna
-    ))
+    debug_manager = None
+    debug_gene_log_list = None
+    debug_novel_log_list = None
+    debug_read_log_list = None
+    if args.debug_gene or args.debug_novel_type or args.debug_read:
+        debug_manager = pool_context.Manager()
+        debug_gene_log_list = debug_manager.list() if args.debug_gene else None
+        debug_novel_log_list = debug_manager.list() if args.debug_novel_type else None
+        debug_read_log_list = debug_manager.list() if args.debug_read else None
 
-    log_message("Submitting and processing reads...")
+    max_inflight_chunks = max(2, args.threads)
+    first_pass_chunk_size = min(args.chunk_size, 1000)
+    if first_pass_chunk_size != args.chunk_size:
+        log_message(f"First pass chunk size capped at {first_pass_chunk_size} reads to limit memory use.")
+    write_chunk_size = min(args.chunk_size, 500)
+    if write_chunk_size != args.chunk_size:
+        log_message(f"Second pass chunk size capped at {write_chunk_size} reads to limit inter-process payload size.")
+
+    processing_regions = get_processing_regions(input_bam, debug_region)
+    if processing_regions == [None]:
+        log_message("BAM index unavailable for regional fetch; falling back to whole-BAM processing.", level="WARNING")
+    elif not debug_region:
+        log_message(f"Processing BAM in chromosome batches across {len(processing_regions)} references.")
+
+    input_bam_2 = pysam.AlignmentFile(args.bam, "rb")
+    output_bam = pysam.AlignmentFile(unsorted_bam_file, "wb", template=input_bam)
     main_process_header = pysam.AlignmentHeader.from_dict(header_dict)
-    chunk_generator = read_bam_in_chunks(input_bam, args.chunk_size, args.num_reads, debug_region)
     total_reads_processed = 0
     next_progress_report = 100000
-
-    all_results = []
-    for chunk_results in pool.imap_unordered(process_chunk, chunk_generator):
-        all_results.extend(chunk_results)
-        total_reads_processed += len(chunk_results)
-        if not args.debug_gene and total_reads_processed >= next_progress_report:
-            log_message(f"Processed {total_reads_processed:,} reads...")
-            next_progress_report += 100000
-    pool.close()
-    pool.join()
     
-    log_message("Aggregating results and filtering novel models...")
-    
-    novel_gene_loci_counts = Counter()
-    novel_transcript_loci_counts = Counter()
-    
-    cdna = args.cdna
-    for _, prelim_gene_id, prelim_transcript_id, read_string in all_results:
-        read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
-        read_strand = '-' if read.is_reverse else '+'
-        
-        if prelim_gene_id == "NOVELG":
-            if cdna:
-                gene_locus = (read.reference_name, read.reference_start, read.reference_end)
-            else:
-                gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            novel_gene_loci_counts[gene_locus] += 1
-            
-        if prelim_transcript_id in ["NOVEL", "NOVELT"]:
-            junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
-            if prelim_gene_id != "NOVELG":
-                gene_id_for_tx = prelim_gene_id
-            else:
-                if cdna:
-                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end)
-                else:
-                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            # transcript locus includes junctions; include strand only when not in cdna mode
-            if cdna:
-                transcript_locus = (gene_id_for_tx, junctions)
-            else:
-                transcript_locus = (gene_id_for_tx, junctions, read_strand)
-            novel_transcript_loci_counts[transcript_locus] += 1
-
-    valid_novel_gene_loci = {locus for locus, count in novel_gene_loci_counts.items() if count >= args.min_reads_for_novel}
-    valid_novel_transcript_loci = {locus for locus, count in novel_transcript_loci_counts.items() if count >= args.min_reads_for_novel}
-
-    log_message(f"Identified {len(novel_gene_loci_counts)} potential novel gene loci; {len(valid_novel_gene_loci)} passed the {args.min_reads_for_novel}-read threshold.")
-    log_message(f"Identified {len(novel_transcript_loci_counts)} potential novel transcript structures; {len(valid_novel_transcript_loci)} passed the threshold.")
-    
-    log_message("Writing final annotated BAM file...")
     abundance_counter = Counter()
     classification_counter = Counter()
     known_genes_found = {}
@@ -605,83 +769,237 @@ def main():
     novel_gene_counter = 0
     novel_transcript_counter = 0
     solo_read_counter = 0
+    total_reads_written = 0
+    next_write_report = 100000
+    combined_potential_novel_genes = 0
+    combined_potential_novel_transcripts = 0
+    combined_valid_novel_genes = 0
+    combined_valid_novel_transcripts = 0
+    combined_solo_reads = 0
 
-    for classification, prelim_gene_id, prelim_transcript_id, read_string in all_results:
-        read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
-        read_strand = '-' if read.is_reverse else '+'
-        
-        final_gene_id = prelim_gene_id
-        final_transcript_id = prelim_transcript_id
+    remaining_reads = args.num_reads
+    for region in processing_regions:
+        if remaining_reads is not None and remaining_reads <= 0:
+            break
 
-        if prelim_gene_id == "NOVELG":
-            if cdna:
-                gene_locus = (read.reference_name, read.reference_start, read.reference_end)
-            else:
-                gene_locus = (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            if gene_locus in valid_novel_gene_loci:
-                if gene_locus not in novel_gene_locus_to_id:
-                    novel_gene_counter += 1
-                    novel_gene_locus_to_id[gene_locus] = f"{args.novel_prefix}G{novel_gene_counter:06d}"
-                final_gene_id = novel_gene_locus_to_id[gene_locus]
-            else:
-                continue
+        region_label = get_region_label(region)
+        region_start_time = time.perf_counter()
+        region_rss_start_mb = get_current_rss_mb()
+        region_peak_rss_start_mb = get_peak_rss_mb()
+        region_annotation = get_annotation_subset((genes, all_donors, all_acceptors), region)
+        region_read_limit = remaining_reads
+        region_reads_processed = 0
+        region_reads_written = 0
+        region_novel_gene_loci_counts = Counter()
+        region_novel_transcript_loci_counts = Counter()
+        region_new_novel_genes = 0
+        region_new_novel_transcripts = 0
+        region_solo_reads = 0
+        region_classification_counter = Counter()
+        first_pass_elapsed_s = 0.0
+        second_pass_elapsed_s = 0.0
+        first_pass_worker_rss_mb = None
+        second_pass_worker_rss_mb = None
 
-        if prelim_transcript_id in ["NOVEL", "NOVELT"]:
-            junctions = tuple(get_read_splice_junctions(read, args.min_intron_len))
-            if final_gene_id != "NOVELG":
-                gene_id_for_tx = final_gene_id
-            else:
-                if cdna:
-                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end)
-                else:
-                    gene_id_for_tx = (read.reference_name, read.reference_start, read.reference_end, read_strand)
-            if cdna:
-                transcript_locus = (gene_id_for_tx, junctions)
-            else:
-                transcript_locus = (gene_id_for_tx, junctions, read_strand)
-            
-            if transcript_locus in valid_novel_transcript_loci:
-                if transcript_locus not in novel_transcript_locus_to_id:
-                    novel_transcript_counter += 1
-                    new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
-                    novel_transcript_locus_to_id[transcript_locus] = new_id
-                    exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
-                    # Force strand of novel model to the gene's strand when the gene is known
-                    model_strand = read_strand
-                    try:
+        log_message(f"First pass: processing {region_label}...")
+        first_pass_start_time = time.perf_counter()
+        pool = pool_context.Pool(processes=args.threads, initializer=worker_init, initargs=(
+            region_annotation, header_dict, args.min_intron_len, args.junc_tolerance,
+            args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list, debug_gene_info,
+            args.debug_read, debug_read_log_list, args.cdna
+        ), maxtasksperchild=25)
+
+        try:
+            chunk_generator = read_bam_in_chunks(input_bam, first_pass_chunk_size, region_read_limit, region)
+            for read_chunk, async_result in iter_pool_tasks_bounded(pool, process_chunk_novel_loci, chunk_generator, max_inflight_chunks):
+                chunk_gene_counts, chunk_transcript_counts = async_result.get()
+                chunk_size = len(read_chunk)
+                region_reads_processed += chunk_size
+                total_reads_processed += chunk_size
+                region_novel_gene_loci_counts.update(chunk_gene_counts)
+                region_novel_transcript_loci_counts.update(chunk_transcript_counts)
+
+                if not args.debug_gene and total_reads_processed >= next_progress_report:
+                    log_message(f"First pass: Processed {total_reads_processed:,} reads...")
+                    while total_reads_processed >= next_progress_report:
+                        next_progress_report += 100000
+        except Exception:
+            pool.terminate()
+            pool.join()
+            raise
+        else:
+            first_pass_worker_rss_mb = get_pool_rss_mb(pool)
+            first_pass_elapsed_s = time.perf_counter() - first_pass_start_time
+            pool.close()
+            pool.join()
+
+        if region_reads_processed == 0:
+            region_elapsed_s = time.perf_counter() - region_start_time
+            region_rss_end_mb = get_current_rss_mb()
+            region_peak_rss_end_mb = get_peak_rss_mb()
+            log_message(f"No reads found for {region_label}; skipping second pass for this region.")
+            log_message(
+                f"Region {region_label} resources: first_pass_time_s={format_elapsed_seconds(first_pass_elapsed_s)}, "
+                f"second_pass_time_s={format_elapsed_seconds(0.0)}, total_time_s={format_elapsed_seconds(region_elapsed_s)}, "
+                f"main_rss_start_mb={format_memory_mb(region_rss_start_mb)}, main_rss_end_mb={format_memory_mb(region_rss_end_mb)}, "
+                f"main_rss_delta_mb={format_memory_mb(region_rss_end_mb - region_rss_start_mb)}, "
+                f"main_peak_rss_mb={format_memory_mb(region_peak_rss_end_mb)}, "
+                f"main_peak_rss_increase_mb={format_memory_mb(max(0.0, region_peak_rss_end_mb - region_peak_rss_start_mb))}, "
+                f"first_pass_worker_rss_mb={format_memory_mb(first_pass_worker_rss_mb)}, second_pass_worker_rss_mb={format_memory_mb(None)}"
+            )
+            continue
+
+        valid_novel_gene_loci = {locus for locus, count in region_novel_gene_loci_counts.items() if count >= args.min_reads_for_novel}
+        valid_novel_transcript_loci = {locus for locus, count in region_novel_transcript_loci_counts.items() if count >= args.min_reads_for_novel}
+        combined_potential_novel_genes += len(region_novel_gene_loci_counts)
+        combined_potential_novel_transcripts += len(region_novel_transcript_loci_counts)
+        combined_valid_novel_genes += len(valid_novel_gene_loci)
+        combined_valid_novel_transcripts += len(valid_novel_transcript_loci)
+
+        log_message(f"Region {region_label}: identified {len(region_novel_gene_loci_counts)} potential novel gene loci; {len(valid_novel_gene_loci)} passed the {args.min_reads_for_novel}-read threshold.")
+        log_message(f"Region {region_label}: identified {len(region_novel_transcript_loci_counts)} potential novel transcript structures; {len(valid_novel_transcript_loci)} passed the threshold.")
+
+        log_message(f"Second pass: processing {region_label}...")
+        second_pass_start_time = time.perf_counter()
+        pool_2 = pool_context.Pool(processes=args.threads, initializer=worker_init, initargs=(
+            region_annotation, header_dict, args.min_intron_len, args.junc_tolerance,
+            args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list, debug_gene_info,
+            args.debug_read, debug_read_log_list, args.cdna
+        ), maxtasksperchild=25)
+
+        try:
+            chunk_generator_2 = read_bam_in_chunks(input_bam_2, write_chunk_size, region_reads_processed, region)
+            for read_chunk, async_result in iter_pool_tasks_bounded(pool_2, process_chunk_annotations, chunk_generator_2, max_inflight_chunks):
+                chunk_annotations = async_result.get()
+                if len(chunk_annotations) != len(read_chunk):
+                    raise RuntimeError("Worker returned a different number of annotations than input reads.")
+
+                for read_string, annotation_result in zip(read_chunk, chunk_annotations):
+                    if annotation_result is None:
+                        continue
+
+                    classification, prelim_gene_id, prelim_transcript_id = annotation_result
+                    total_reads_written += 1
+                    region_reads_written += 1
+                    read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
+                    read_strand = get_read_strand(read)
+                    
+                    final_gene_id = prelim_gene_id
+                    final_transcript_id = prelim_transcript_id
+
+                    if prelim_gene_id == "NOVELG":
+                        gene_locus = get_gene_locus(read, read_strand, args.cdna)
+                        if gene_locus in valid_novel_gene_loci:
+                            if gene_locus not in novel_gene_locus_to_id:
+                                novel_gene_counter += 1
+                                region_new_novel_genes += 1
+                                novel_gene_locus_to_id[gene_locus] = f"{args.novel_prefix}G{novel_gene_counter:06d}"
+                            final_gene_id = novel_gene_locus_to_id[gene_locus]
+                        else:
+                            continue
+
+                    if prelim_transcript_id in ["NOVEL", "NOVELT"]:
                         if final_gene_id != "NOVELG":
-                            chrom_genes = genes.get(read.reference_name, {})
-                            gene_info = chrom_genes.get(final_gene_id)
-                            if gene_info and 'strand' in gene_info:
-                                model_strand = gene_info['strand']
-                    except Exception:
-                        # keep read strand if anything unexpected occurs
-                        model_strand = read_strand
+                            gene_id_for_tx = final_gene_id
+                        else:
+                            gene_id_for_tx = get_gene_locus(read, read_strand, args.cdna)
+                        transcript_locus = get_transcript_locus(
+                            read, gene_id_for_tx, read_strand, args.min_intron_len, args.cdna
+                        )
+                        
+                        if transcript_locus in valid_novel_transcript_loci:
+                            if transcript_locus not in novel_transcript_locus_to_id:
+                                novel_transcript_counter += 1
+                                region_new_novel_transcripts += 1
+                                new_id = f"{args.novel_prefix}T{novel_transcript_counter:010d}"
+                                novel_transcript_locus_to_id[transcript_locus] = new_id
+                                exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
+                                model_strand = read_strand
+                                try:
+                                    if final_gene_id != "NOVELG":
+                                        chrom_genes = genes.get(read.reference_name, {})
+                                        gene_info = chrom_genes.get(final_gene_id)
+                                        if gene_info and 'strand' in gene_info:
+                                            model_strand = gene_info['strand']
+                                except Exception:
+                                    model_strand = read_strand
 
-                    novel_models[transcript_locus] = {
-                        'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
-                        'strand': model_strand, 'exons': exons
-                    }
-                final_transcript_id = novel_transcript_locus_to_id[transcript_locus]
-            else:
-                final_transcript_id = "solo"
-                solo_read_counter += 1
-        
-        read.set_tag("TT", classification)
-        read.set_tag("GX", final_gene_id)
-        read.set_tag("TX", final_transcript_id)
-        output_bam.write(read)
+                                novel_models[transcript_locus] = {
+                                    'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
+                                    'strand': model_strand, 'exons': exons
+                                }
+                            final_transcript_id = novel_transcript_locus_to_id[transcript_locus]
+                        else:
+                            final_transcript_id = "solo"
+                            solo_read_counter += 1
+                            region_solo_reads += 1
+                    
+                    read.set_tag("TT", classification)
+                    read.set_tag("GX", final_gene_id)
+                    read.set_tag("TX", final_transcript_id)
+                    output_bam.write(read)
 
-        if prelim_gene_id != "NOVELG":
-            known_genes_found[final_gene_id] = True
-        if classification in ["Known", "ISM"]:
-            known_transcripts_found[final_transcript_id] = True
-        
-        abundance_key = (final_gene_id, final_transcript_id, classification)
-        abundance_counter.update([abundance_key])
-        classification_counter.update([classification])
+                    if prelim_gene_id != "NOVELG":
+                        known_genes_found[final_gene_id] = True
+                    if classification in ["Known", "ISM"]:
+                        known_transcripts_found[final_transcript_id] = True
+                    
+                    abundance_key = (final_gene_id, final_transcript_id, classification)
+                    abundance_counter.update([abundance_key])
+                    classification_counter.update([classification])
+                    region_classification_counter.update([classification])
+                    
+                    if not args.debug_gene and total_reads_written >= next_write_report:
+                        log_message(f"Second pass: Written {total_reads_written:,} reads...")
+                        while total_reads_written >= next_write_report:
+                            next_write_report += 100000
+        except Exception:
+            pool_2.terminate()
+            pool_2.join()
+            raise
+        else:
+            second_pass_worker_rss_mb = get_pool_rss_mb(pool_2)
+            second_pass_elapsed_s = time.perf_counter() - second_pass_start_time
+            pool_2.close()
+            pool_2.join()
 
+        combined_solo_reads += region_solo_reads
+        region_elapsed_s = time.perf_counter() - region_start_time
+        region_rss_end_mb = get_current_rss_mb()
+        region_peak_rss_end_mb = get_peak_rss_mb()
+        log_message(
+            f"Region {region_label} complete: reads_processed={region_reads_processed:,}, reads_written={region_reads_written:,}, "
+            f"potential_novel_genes={len(region_novel_gene_loci_counts):,}, valid_novel_genes={len(valid_novel_gene_loci):,}, "
+            f"new_novel_genes={region_new_novel_genes:,}, potential_novel_transcripts={len(region_novel_transcript_loci_counts):,}, "
+            f"valid_novel_transcripts={len(valid_novel_transcript_loci):,}, new_novel_transcripts={region_new_novel_transcripts:,}, "
+            f"solo_reads={region_solo_reads:,}"
+        )
+        log_message(f"Region {region_label} classification breakdown: {format_classification_summary(region_classification_counter)}")
+        log_message(
+            f"Region {region_label} resources: first_pass_time_s={format_elapsed_seconds(first_pass_elapsed_s)}, "
+            f"second_pass_time_s={format_elapsed_seconds(second_pass_elapsed_s)}, total_time_s={format_elapsed_seconds(region_elapsed_s)}, "
+            f"main_rss_start_mb={format_memory_mb(region_rss_start_mb)}, main_rss_end_mb={format_memory_mb(region_rss_end_mb)}, "
+            f"main_rss_delta_mb={format_memory_mb(region_rss_end_mb - region_rss_start_mb)}, "
+            f"main_peak_rss_mb={format_memory_mb(region_peak_rss_end_mb)}, "
+            f"main_peak_rss_increase_mb={format_memory_mb(max(0.0, region_peak_rss_end_mb - region_peak_rss_start_mb))}, "
+            f"first_pass_worker_rss_mb={format_memory_mb(first_pass_worker_rss_mb)}, second_pass_worker_rss_mb={format_memory_mb(second_pass_worker_rss_mb)}"
+        )
+
+        if remaining_reads is not None:
+            remaining_reads -= region_reads_processed
+
+    log_message(f"First pass: Processed {total_reads_processed:,} reads...")
+    final_main_rss_mb = get_current_rss_mb()
+    final_peak_rss_mb = get_peak_rss_mb()
+    log_message(
+        f"Combined counts: reads_processed={total_reads_processed:,}, reads_written={total_reads_written:,}, "
+        f"potential_novel_genes={combined_potential_novel_genes:,}, valid_novel_genes={combined_valid_novel_genes:,}, "
+        f"novel_genes_discovered={len(novel_gene_locus_to_id):,}, potential_novel_transcripts={combined_potential_novel_transcripts:,}, "
+        f"valid_novel_transcripts={combined_valid_novel_transcripts:,}, novel_transcripts_discovered={len(novel_transcript_locus_to_id):,}, "
+        f"solo_reads={combined_solo_reads:,}, main_rss_mb={format_memory_mb(final_main_rss_mb)}, main_peak_rss_mb={format_memory_mb(final_peak_rss_mb)}"
+    )
     input_bam.close()
+    input_bam_2.close()
     output_bam.close()
     
     if args.debug_gene and debug_gene_log_list:
@@ -710,6 +1028,9 @@ def main():
         with open(debug_filename, 'w') as f:
             for line in debug_read_log_list:
                 f.write(line + '\n')
+
+    if debug_manager is not None:
+        debug_manager.shutdown()
 
     # Optionally filter out Antisense transcripts from DOGME outputs
     generate_qc_report(abundance_counter, gene_id_to_name, qc_report_file)
@@ -754,12 +1075,22 @@ def main():
 
     # --- Final Statistics Reporting ---
     log_message("--- Final Statistics ---")
+    total_runtime_s = time.time() - start_time
     stats_to_save = {
+        'Reads processed in first pass': total_reads_processed,
+        'Reads written in second pass': total_reads_written,
         'Known genes detected': len(known_genes_found),
         'Known transcripts detected': len(known_transcripts_found),
+        'Potential novel gene loci': combined_potential_novel_genes,
+        'Valid novel gene loci': combined_valid_novel_genes,
         'Novel genes discovered': len(novel_gene_locus_to_id),
+        'Potential novel transcript loci': combined_potential_novel_transcripts,
+        'Valid novel transcript loci': combined_valid_novel_transcripts,
         'Novel transcripts discovered': len(novel_transcript_locus_to_id),
-        'Reads tagged as solo (low support novel TX)': solo_read_counter,
+        'Reads tagged as solo (low support novel TX)': combined_solo_reads,
+        'Final main RSS (MB)': round(final_main_rss_mb, 2),
+        'Peak main RSS (MB)': round(final_peak_rss_mb, 2),
+        'Total runtime seconds': round(total_runtime_s, 2),
         'Classification Summary': dict(sorted(classification_counter.items()))
     }
     
