@@ -40,7 +40,7 @@ process doradoDownloadTask {
     . ${params.scriptEnv}
     mkdir -p ${dirPath}
     dorado download --data ${params.podDir} --model ${doradoModel}
-    cp -rp *_* ${dirPath}
+    cp -r *_* ${dirPath}
     """
 }
 
