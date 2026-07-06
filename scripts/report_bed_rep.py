@@ -54,7 +54,9 @@ def process_replicates(input_folders, output_folder):
     # 1. Scan ALL folders and pool files together
     total_files = 0
     for folder in input_folders:
-        files = glob.glob(os.path.join(folder, "*.bed"))
+        files = []
+        for pattern in ("*.bed", "*.bed.gz"):
+            files.extend(glob.glob(os.path.join(folder, pattern)))
         total_files += len(files)
         
         for f in files:

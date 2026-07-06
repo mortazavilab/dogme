@@ -45,19 +45,19 @@ The following Python scripts are included or updated in the scripts/ directory. 
   - Converts a GTF into a junction BED suitable for minimap2 spliced alignment. This is used automatically for RNA and CDNA mapping.
 
 - scripts/filterbed.py
-  - Filters modkit bed outputs by minimum coverage and per-mod thresholds (params.minCov and params.perMod).
+  - Filters modkit bed outputs by minimum coverage and per-mod thresholds (params.minCov and params.perMod), reading and writing compressed `.bed.gz` files for the BED workflow.
 
 - scripts/annotateRNA.py
   - Annotates mapped BAMs with transcript information. Now outputs TALON-compatible outputs and expanded QC CSVs by default. Accepts a -CDNA flag for cDNA-specific behavior.
 
 - scripts/generate_report.py
-  - Gathers inventory and QC metrics across outputs and generates inventory_report.tsv and qc_summary.csv (additional BAM/FASTQ stats added post-1.2.2).
+  - Gathers inventory and QC metrics across outputs and generates inventory_report.tsv and qc_summary.csv (additional BAM/FASTQ stats added post-1.2.2), including compressed `bedMethyl` outputs.
 
 - scripts/reconcileBams.py
   - Consolidates per-sample/TALON-style BAM/gene outputs and reports consolidated gene counts and reconciliation statistics (updated in 1.2.2 to correct gene counts).
 
 - scripts/report_bed_rep.py
-  - Compares per-sample modkit BED outputs across folders (replicates), merges plus/minus strands per sample and produces per-reference/modification comparison CSVs (e.g., Compare_GRCh38_m6A.csv).
+  - Compares per-sample modkit BED outputs across folders (replicates), including compressed `.bed.gz` files, merges plus/minus strands per sample and produces per-reference/modification comparison CSVs (e.g., Compare_GRCh38_m6A.csv).
 
 ---
 
@@ -156,7 +156,7 @@ Running Dogme on typical dataset can take more than 24 hours, therefore it is re
  ```
 nextflow run mortazavilab/dogme -c yourconfig.conf
 ```
-By default, the pipeline will create several folders within the launch directory such as bams, bedMethyl, fastqs, and kallisto - all of which can be customized in the config file. If you need to resume your work add '-resume' to the nextflow command after deleting the html report and trace files.
+By default, the pipeline will create several folders within the launch directory such as bams, bedMethyl, fastqs, and kallisto - all of which can be customized in the config file. The `bedMethyl` directory stores compressed `.bed.gz` outputs for the raw modkit BEDs, filtered BEDs, and final per-modification BEDs. If you need to resume your work add '-resume' to the nextflow command after deleting the html report and trace files.
 
 ---
 

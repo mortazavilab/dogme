@@ -33,27 +33,25 @@ def collect_file_info(directory):
     """Collects file metadata (size, mod_time, md5) from subdirectories."""
     file_data = []
     search_patterns = {
-        "bams": "bam",
-        "bedMethyl": "bed",
-        "openChromatin": "bed",
-        "annot": ["bam", "csv", "tsv", "gtf"]
+        "bams": [("*.bam", "bam")],
+        "bedMethyl": [("*.bed.gz", "bed.gz"), ("*.bed", "bed")],
+        "openChromatin": [("*.bed", "bed")],
+        "annot": [("*.bam", "bam"), ("*.csv", "csv"), ("*.tsv", "tsv"), ("*.gtf", "gtf")]
     }
     print("Scanning for files to inventory...")
-    for subfolder, extensions in search_patterns.items():
+    for subfolder, patterns in search_patterns.items():
         target_dir = os.path.join(directory, subfolder)
         if not os.path.exists(target_dir):
             continue
-        if not isinstance(extensions, list):
-            extensions = [extensions]
-        for ext in extensions:
-            pattern = os.path.join(target_dir, f'*.{ext}')
+        for file_glob, extension in patterns:
+            pattern = os.path.join(target_dir, file_glob)
             for filepath_str in glob.glob(pattern):
                 filepath = Path(filepath_str)
                 print(f"  - Processing inventory for: {filepath.name}")
                 size_bytes = filepath.stat().st_size
                 file_data.append({
                     'filename': filepath.name,
-                    'extension': ext,
+                    'extension': extension,
                     'size_bytes': size_bytes,
                     'path': str(filepath.resolve()),
                     'mod_time': datetime.fromtimestamp(filepath.stat().st_mtime),
