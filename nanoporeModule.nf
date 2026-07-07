@@ -164,7 +164,7 @@ process modkitTask {
     tuple path(inputFile), path(inputBai), val(genomeName)
 
     output:
-    path "*.bed"
+    path "*.bed.gz"
 
     publishDir params.bedDir, mode: 'copy'
     script:
@@ -184,6 +184,7 @@ process modkitTask {
         fi
     fi
     modkit pileup -t 12 ${filterThresholdArg} "${inputFile}" "\${bedFileOutput}"
+    gzip "\${bedFileOutput}"
     """
 }
 
@@ -191,12 +192,12 @@ process filterbedTask {
     input:
     path inputFile
     output:
-    path "*.filtered*.bed"
+    path "*.filtered*.bed.gz"
     publishDir params.bedDir, mode: 'copy'
     script:
     """
-    output_prefix="${inputFile.baseName}"
-    bedFileOutput="\${output_prefix}.filtered-${params.minCov}-${params.perMod}.bed"
+    output_prefix="\$(basename "${inputFile}" .bed.gz)"
+    bedFileOutput="\${output_prefix}.filtered-${params.minCov}-${params.perMod}.bed.gz"
     python ${projectDir}/scripts/filterbed.py ${params.minCov} ${params.perMod} "${inputFile}" \${bedFileOutput}
     """
 }
@@ -269,45 +270,46 @@ process splitModificationTask {
     input:
     path inputFile
     output:
-    path "*.filtered.*"
+    path "*.filtered*.bed.gz"
     publishDir params.bedDir, mode: 'copy'
     script:
     """
     . ${params.scriptEnv}
+    input_prefix="\$(basename "${inputFile}" .bed.gz)"
     if [[ "${params.readType}" == "DNA" ]]; then 
         # Extract 5mCG (methylation)
-        if grep -q 'm' "${inputFile}"; then
-            grep -w 'm' "${inputFile}" > "${inputFile.baseName}.5mCG.filtered.bed"
+        if gzip -cd "${inputFile}" | grep -q -w 'm'; then
+            gzip -cd "${inputFile}" | grep -w 'm' | gzip -c > "\${input_prefix}.5mCG.filtered.bed.gz"
         fi
         # Extract 5hmCG (hydroxymethylation)
-        if grep -q 'h' "${inputFile}"; then
-            grep -w 'h' "${inputFile}" > "${inputFile.baseName}.5hmCG.filtered.bed"
+        if gzip -cd "${inputFile}" | grep -q -w 'h'; then
+            gzip -cd "${inputFile}" | grep -w 'h' | gzip -c > "\${input_prefix}.5hmCG.filtered.bed.gz"
         fi
         # Extract 6mA
-        if grep -q 'a' "${inputFile}"; then
-            grep -w 'a' "${inputFile}" > "${inputFile.baseName}.6mA.filtered.bed"
+        if gzip -cd "${inputFile}" | grep -q -w 'a'; then
+            gzip -cd "${inputFile}" | grep -w 'a' | gzip -c > "\${input_prefix}.6mA.filtered.bed.gz"
         fi
     elif [[ "${params.readType}" == "RNA" ]]; then
-        base_name="\$(basename "${inputFile}" .bed)"
+        base_name="\${input_prefix}"
         # Extract m6A modifications (Plus & Minus strands)
-        if grep -q 'a' "${inputFile}"; then
-            grep -w 'a' "${inputFile}" > "\${base_name/filtered*/m6A.filtered}.bed"
+        if gzip -cd "${inputFile}" | grep -q -w 'a'; then
+            gzip -cd "${inputFile}" | grep -w 'a' | gzip -c > "\${base_name/filtered*/m6A.filtered}.bed.gz"
         fi
         # Extract inosine modifications (Plus & Minus strands)
-        if grep -q '17596' "${inputFile}"; then
-            grep -w '17596' "${inputFile}" > "\${base_name/filtered*/inosine.filtered}.bed"
+        if gzip -cd "${inputFile}" | grep -q -w '17596'; then
+            gzip -cd "${inputFile}" | grep -w '17596' | gzip -c > "\${base_name/filtered*/inosine.filtered}.bed.gz"
         fi
         # Extract pseudouridine (pseU) modifications (Plus & Minus strands)
-        if grep -q '17802' "${inputFile}"; then
-            grep -w '17802' "${inputFile}" > "\${base_name/filtered*/pseU.filtered}.bed"
+        if gzip -cd "${inputFile}" | grep -q -w '17802'; then
+            gzip -cd "${inputFile}" | grep -w '17802' | gzip -c > "\${base_name/filtered*/pseU.filtered}.bed.gz"
         fi
         # Extract m5C modifications (Plus & Minus strands)
-        if grep -q 'm' "${inputFile}"; then
-            grep -w 'm' "${inputFile}" > "\${base_name/filtered*/m5C.filtered}.bed"
+        if gzip -cd "${inputFile}" | grep -q -w 'm'; then
+            gzip -cd "${inputFile}" | grep -w 'm' | gzip -c > "\${base_name/filtered*/m5C.filtered}.bed.gz"
         fi
         # Extract Nm modifications (Plus & Minus strands)
-        if grep -qE '19228|19229|19227|69426' "${inputFile}"; then
-            grep -Ew '19228|19229|19227|69426' "${inputFile}" > "\${base_name/filtered*/Nm.filtered}.bed"
+        if gzip -cd "${inputFile}" | grep -qE -w '19228|19229|19227|69426'; then
+            gzip -cd "${inputFile}" | grep -Ew '19228|19229|19227|69426' | gzip -c > "\${base_name/filtered*/Nm.filtered}.bed.gz"
         fi
     fi
     """
