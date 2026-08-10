@@ -7,6 +7,7 @@ All notable DOGME changes are documented here.
 ### Added
 
 - Optional seqspec generation for FASTQs produced from unmapped BAMs.
+- Added an explicit Parse Evercode WT mega v2 nanopore seqspec 0.4.0 template with barcode, linker, UMI, and ONT adapter geometry.
 - Jinja2 template rendering followed by `seqspec upgrade`, `seqspec format`, and `seqspec check`.
 - Published seqspec artifacts and render variables under `${fastqDir}/seqspec`.
 - `singleCell`, `singleCellKit`, `seqspecTemplate`, and `seqspecVariables` configuration parameters.
@@ -15,6 +16,7 @@ All notable DOGME changes are documented here.
 ### Documentation
 
 - Documented seqspec artifact generation from supplied templates and variables. The artifact records declared geometry; it is not inferred from FASTQ or BAM data.
+- Documented the Evercode template as an explicit input; its 0.4.0 schema remains unvalidated until it is rendered and checked inside the DOGME image.
 - Documented that single-cell read processing, barcode/UMI extraction, `CB`/`CR`/`UB`/`UR` tagging, and barcode correction are not implemented. `singleCell` and `singleCellKit` remain reserved parameters.
 
 ## [1.3.2]

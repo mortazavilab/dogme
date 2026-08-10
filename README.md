@@ -198,6 +198,12 @@ params {
 }
 ```
 
+The repository includes the Parse Evercode WT mega v2 nanopore template at
+`templates/parse-evercode-wt-mega-v2-nanopore.yaml.j2`. It is an explicit
+template input and is not selected automatically. Its 0.4.0 schema has not yet
+been validated inside the DOGME image; run `seqspec check` after rendering
+before using it for production data.
+
 The renderer runs inside the configured Docker or Apptainer image and executes `seqspec upgrade`, `seqspec format`, and `seqspec check`. It publishes the final `${sample}.seqspec.yaml`, the rendered pre-upgrade spec, and the variables JSON under `${fastqDir}/seqspec`.
 
 `singleCell` defaults to `false`, but it does not enable single-cell processing in this release. `singleCellKit` is reserved for future use. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
