@@ -11,7 +11,7 @@ All notable DOGME changes are documented here.
 - Derived FASTQ filename, size, MD5, observed length bounds, and run date, with optional variable overrides.
 - Added an explicit Parse Evercode WT mega v2 nanopore seqspec 0.4.0 template with barcode, linker, UMI, and ONT adapter geometry.
 - Built-in template rendering followed by `seqspec upgrade`, `seqspec format`, and `seqspec check`.
-- Published seqspec artifacts and render variables under `${fastqDir}/seqspec`.
+- Published the final seqspec artifact beside its FASTQ under `${fastqDir}`.
 - `singleCell`, `singleCellKit`, `seqspecTemplate`, and `seqspecVariables` configuration parameters.
 - Clear runtime errors when the configured Docker/Apptainer image does not provide seqspec.
 

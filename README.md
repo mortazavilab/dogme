@@ -224,7 +224,7 @@ The repository includes the Parse Evercode WT mega v2 nanopore template at
 validated inside the DOGME image; run `seqspec check` after rendering before
 using it for production data.
 
-The renderer runs inside `ghcr.io/mortazavilab/dogme-pipeline:latest` and executes `seqspec upgrade`, `seqspec format`, and `seqspec check`. DOGME fills template placeholders without Jinja2. Enable Docker or Singularity/Apptainer in the Nextflow configuration; without a container runtime, the task cannot access the image-provided seqspec dependency. It publishes the final `${sample}.seqspec.yaml`, the rendered pre-upgrade spec, and the variables JSON under `${fastqDir}/seqspec`.
+The renderer runs inside `ghcr.io/mortazavilab/dogme-pipeline:latest` and executes the compatible `seqspec` validation workflow. DOGME fills template placeholders without Jinja2. Enable Docker or Singularity/Apptainer in the Nextflow configuration; without a container runtime, the task cannot access the image-provided seqspec dependency. It publishes only the final `${sample}.seqspec.yaml` beside the generated FASTQ under `${fastqDir}`.
 
 `singleCell` defaults to `false`, but it does not enable single-cell processing in this release. `singleCellKit` is reserved for future use. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
 

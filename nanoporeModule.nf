@@ -223,9 +223,7 @@ process generateSeqspecTask {
     path inputFastq
     output:
     path "*.seqspec.yaml"
-    path "*.seqspec.rendered.yaml"
-    path "*.seqspec.variables.json"
-    publishDir "${params.fastqDir}/seqspec", mode: 'copy'
+    publishDir params.fastqDir, mode: 'copy'
     script:
     def outputSpec = "${params.sample}.seqspec.yaml"
     """
