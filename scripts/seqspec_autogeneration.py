@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import gzip
 import re
 from datetime import date
 from pathlib import Path
@@ -45,7 +46,8 @@ def measure_fastq(fastq: Path, calculate_md5: bool = True) -> dict[str, Any]:
     maximum: int | None = None
     size = fastq.stat().st_size
     digest = hashlib.md5() if calculate_md5 else None
-    with fastq.open("rb") as handle:
+    opener = gzip.open if fastq.suffix == ".gz" else Path.open
+    with opener(fastq, "rb") as handle:
         while True:
             record = [handle.readline() for _ in range(4)]
             if not record[0]:

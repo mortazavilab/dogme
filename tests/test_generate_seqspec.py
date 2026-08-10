@@ -1,4 +1,5 @@
 import importlib.util
+import gzip
 import json
 import shutil
 import subprocess
@@ -60,6 +61,19 @@ def test_measure_fastq_and_merge_overrides(tmp_path):
     assert merged["read_max_length"] == 99
     assert merged["read_min_length"] == 2
     assert merged["library_kit"] == "override"
+
+
+def test_measure_gzipped_fastq(tmp_path):
+    fastq = tmp_path / "sample.fastq.gz"
+    with gzip.open(fastq, "wt") as handle:
+        handle.write("@one\nACGT\n+\n!!!!\n")
+
+    measured = measure_fastq(fastq)
+
+    assert measured["read_file_name"] == "sample.fastq.gz"
+    assert measured["read_min_length"] == 4
+    assert measured["read_max_length"] == 4
+    assert measured["read_file_size"] == fastq.stat().st_size
 
 
 def test_render_template_replaces_values_and_arithmetic():
