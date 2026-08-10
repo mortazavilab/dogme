@@ -1,0 +1,55 @@
+!Assay
+seqspec_version: 0.3.0
+assay_id: {{ assay_id }}
+doi: {{ doi }}
+date: {{ date }}
+name: {{ assay_name }}
+description: Minimal synthetic assay for renderer testing
+modalities:
+  - rna
+lib_struct: ""
+library_protocol: {{ library_protocol }}
+library_kit: {{ library_kit }}
+sequence_protocol: {{ sequence_protocol }}
+sequence_kit: {{ sequence_kit }}
+sequence_spec:
+  - !Read
+    read_id: read-1
+    name: Synthetic FASTQ
+    modality: rna
+    primer_id: null
+    min_len: 1
+    max_len: 1000
+    strand: pos
+    files:
+      - !File
+        file_id: read-1
+        filename: synthetic.fastq
+        filetype: fastq
+        filesize: 0
+        url: synthetic.fastq
+        urltype: local
+        md5: null
+library_spec:
+  - !Region
+    region_id: rna
+    region_type: rna
+    name: rna
+    sequence_type: joined
+    sequence: ""
+    min_len: 1
+    max_len: 1000
+    onlist: null
+    regions:
+      - !Region
+        region_id: cDNA
+        region_type: cdna
+        name: cDNA
+        sequence_type: random
+        sequence: X
+        min_len: 1
+        max_len: 1000
+        onlist: null
+        regions: null
+        parent_id: rna
+    parent_id: null

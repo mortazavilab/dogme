@@ -8,15 +8,6 @@ import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from jinja2 import Template
-except ModuleNotFoundError as exc:
-    raise SystemExit(
-        "ERROR: Jinja2 is not available in the DOGME Docker/Apptainer image; "
-        "the image must provide Jinja2 for seqspec template rendering."
-    ) from exc
-
-
 def run_seqspec(*args: str) -> str:
     command = ["seqspec", *args]
     try:
@@ -55,6 +46,14 @@ def main() -> int:
         variables = json.loads(args.variables.read_text())
     except (OSError, json.JSONDecodeError) as exc:
         raise RuntimeError(f"Could not read seqspec render variables: {exc}") from exc
+
+    try:
+        from jinja2 import Template
+    except ModuleNotFoundError as exc:
+        raise RuntimeError(
+            "Jinja2 is not available in the DOGME Docker/Apptainer image; "
+            "the image must provide Jinja2 for seqspec template rendering."
+        ) from exc
 
     variables.setdefault("read_file_name", args.fastq.name)
     rendered = Template(args.template.read_text()).render(**variables)
