@@ -7,6 +7,8 @@ All notable DOGME changes are documented here.
 ### Added
 
 - Optional seqspec generation for FASTQs produced from unmapped BAMs.
+- Automatic built-in template selection for RNA, cDNA, DNA, and Parse single-cell configurations.
+- Derived FASTQ filename, size, MD5, observed length bounds, and run date, with optional variable overrides.
 - Added an explicit Parse Evercode WT mega v2 nanopore seqspec 0.4.0 template with barcode, linker, UMI, and ONT adapter geometry.
 - Jinja2 template rendering followed by `seqspec upgrade`, `seqspec format`, and `seqspec check`.
 - Published seqspec artifacts and render variables under `${fastqDir}/seqspec`.

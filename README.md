@@ -183,11 +183,31 @@ By default, the pipeline will create several folders within the launch directory
 
 ## Seqspec generation for generated FASTQs
 
-When DOGME creates a FASTQ from an unmapped BAM, it can create a seqspec artifact beside the FASTQ. The spec is rendered from the supplied template and variables; it is not derived from the FASTQ or BAM. An unmapped BAM carries no assay geometry, so the artifact records declared geometry rather than inferring it.
+When DOGME creates a FASTQ from an unmapped BAM, it automatically creates a seqspec artifact beside the FASTQ. Region structure is declared by a built-in assay template; read lengths and file metadata are measured from the generated FASTQ. An unmapped BAM carries no assay geometry, so the artifact does not infer region structure from the BAM.
 
 Single-cell read processing, barcode and UMI extraction, `CB`/`CR`/`UB`/`UR` tagging, and barcode correction are not implemented in this release. `singleCell` and `singleCellKit` are reserved parameters for future work.
 
-Seqspec generation is enabled by supplying a Jinja2 template and a JSON render-variable file:
+The built-in template is selected from the run configuration:
+
+| `readType` | `singleCell` | Template |
+| --- | --- | --- |
+| `RNA` | `false` | `templates/seqspec/ont-bulk-drna.yaml.j2` |
+| `CDNA` | `false` | `templates/seqspec/ont-bulk-cdna.yaml.j2` |
+| `DNA` | `false` | `templates/seqspec/ont-bulk-gdna.yaml.j2` |
+| `CDNA` | `true` | `templates/parse-evercode-wt-mega-v2-nanopore.yaml.j2` |
+
+The normal case requires no seqspec-specific parameters. An unsupported
+`readType`/`singleCell` combination fails clearly rather than using the wrong
+assay geometry. `params.seqspecTemplate` remains an explicit override, and
+`params.seqspecVariables` is an optional JSON object merged over values derived
+from the run.
+
+The derived values include the generated FASTQ filename, file ID, byte size,
+local URL, MD5 checksum (unless `params.seqspecMd5 = false`), observed minimum
+and maximum read lengths, and run date. User-provided variables take precedence
+over those derived values.
+
+Explicit override configuration remains available:
 
 ```groovy
 params {
@@ -199,10 +219,10 @@ params {
 ```
 
 The repository includes the Parse Evercode WT mega v2 nanopore template at
-`templates/parse-evercode-wt-mega-v2-nanopore.yaml.j2`. It is an explicit
-template input and is not selected automatically. Its 0.4.0 schema has not yet
-been validated inside the DOGME image; run `seqspec check` after rendering
-before using it for production data.
+`templates/parse-evercode-wt-mega-v2-nanopore.yaml.j2`. It is selected for
+`readType = 'CDNA'` with `singleCell = true`. Its 0.4.0 schema has not yet been
+validated inside the DOGME image; run `seqspec check` after rendering before
+using it for production data.
 
 The renderer runs inside the configured Docker or Apptainer image and executes `seqspec upgrade`, `seqspec format`, and `seqspec check`. It publishes the final `${sample}.seqspec.yaml`, the rendered pre-upgrade spec, and the variables JSON under `${fastqDir}/seqspec`.
 

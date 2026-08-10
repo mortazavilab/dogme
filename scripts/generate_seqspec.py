@@ -8,6 +8,12 @@ import subprocess
 import sys
 from pathlib import Path
 
+try:
+    from seqspec_autogeneration import build_variables, load_overrides, select_template
+except ModuleNotFoundError:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
+    from seqspec_autogeneration import build_variables, load_overrides, select_template
+
 def run_seqspec(*args: str) -> str:
     command = ["seqspec", *args]
     try:
@@ -31,21 +37,31 @@ def run_seqspec(*args: str) -> str:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--template", required=True, type=Path)
-    parser.add_argument("--variables", required=True, type=Path)
+    parser.add_argument("--template", type=Path)
+    parser.add_argument("--variables", type=Path)
+    parser.add_argument("--template-dir", type=Path)
+    parser.add_argument("--read-type", default="RNA")
+    parser.add_argument("--single-cell", action="store_true")
+    parser.add_argument("--no-md5", action="store_true")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--fastq", required=True, type=Path)
     args = parser.parse_args()
 
+    if args.template is None:
+        if args.template_dir is None:
+            parser.error("--template or --template-dir is required")
+        try:
+            args.template = select_template(args.read_type, args.single_cell, args.template_dir)
+        except (FileNotFoundError, ValueError) as exc:
+            parser.error(str(exc))
     if not args.template.is_file():
         parser.error(f"seqspec template does not exist: {args.template}")
     if not args.fastq.is_file():
         parser.error(f"FASTQ does not exist: {args.fastq}")
 
-    try:
-        variables = json.loads(args.variables.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        raise RuntimeError(f"Could not read seqspec render variables: {exc}") from exc
+    variables = build_variables(args.fastq, load_overrides(args.variables))
+    if args.no_md5:
+        variables["read_md5sum"] = None
 
     try:
         from jinja2 import Template
@@ -71,7 +87,9 @@ def main() -> int:
     run_seqspec("upgrade", str(rendered_path), "-o", str(args.output))
     run_seqspec("format", str(args.output), "-o", str(args.output))
     run_seqspec("check", str(args.output))
-    shutil.copyfile(args.variables, args.output.with_suffix(".variables.json"))
+    args.output.with_suffix(".variables.json").write_text(
+        json.dumps(variables, indent=2, sort_keys=True) + "\n"
+    )
     return 0
 
 

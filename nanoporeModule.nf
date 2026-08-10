@@ -219,7 +219,7 @@ process extractfastqTask {
 process generateSeqspecTask {
     tag "${params.sample} seqspec"
     input:
-    tuple path(inputFastq), path(template), path(variables)
+    path inputFastq
     output:
     path "*.seqspec.yaml"
     path "*.seqspec.rendered.yaml"
@@ -230,8 +230,12 @@ process generateSeqspecTask {
     """
     . ${params.scriptEnv}
     python ${projectDir}/scripts/generate_seqspec.py \
-        --template ${template} \
-        --variables ${variables} \
+        --template-dir ${projectDir}/templates/seqspec \
+        --read-type ${params.readType} \
+        ${params.singleCell ? '--single-cell' : ''} \
+        ${params.seqspecMd5 ? '' : '--no-md5'} \
+        ${params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''} \
+        ${params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''} \
         --fastq ${inputFastq} \
         --output ${outputSpec}
     """
@@ -506,16 +510,7 @@ workflow kallistoWorkflow {
     main:
     fastqFile = extractfastqTask(unmapped_bams_ch)
 
-    if (params.seqspecTemplate) {
-        seqspecVariablesPath = params.seqspecVariables ?: "${projectDir}/seqspec.variables.json"
-        if (!file(seqspecVariablesPath).exists()) {
-            throw new IllegalArgumentException("seqspecTemplate requires an existing seqspecVariables JSON file: ${seqspecVariablesPath}")
-        }
-        seqspecInput = fastqFile.map { fastq ->
-            tuple(fastq, file(params.seqspecTemplate), file(seqspecVariablesPath))
-        }
-        generateSeqspecTask(seqspecInput)
-    }
+    generateSeqspecTask(fastqFile)
 
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)

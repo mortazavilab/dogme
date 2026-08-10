@@ -5,12 +5,60 @@ import subprocess
 import sys
 from pathlib import Path
 
-import pytest
 
+import pytest
 
 ROOT = Path(__file__).resolve().parents[1]
 FIXTURES = ROOT / "tests" / "fixtures"
 SCRIPT = ROOT / "scripts" / "generate_seqspec.py"
+AUTOGENERATION = ROOT / "scripts" / "seqspec_autogeneration.py"
+module_spec = importlib.util.spec_from_file_location("seqspec_autogeneration", AUTOGENERATION)
+seqspec_autogeneration = importlib.util.module_from_spec(module_spec)
+module_spec.loader.exec_module(seqspec_autogeneration)
+load_overrides = seqspec_autogeneration.load_overrides
+measure_fastq = seqspec_autogeneration.measure_fastq
+select_template = seqspec_autogeneration.select_template
+build_variables = seqspec_autogeneration.build_variables
+
+
+@pytest.mark.parametrize(
+    ("read_type", "single_cell", "expected"),
+    [
+        ("RNA", False, "ont-bulk-drna.yaml.j2"),
+        ("CDNA", False, "ont-bulk-cdna.yaml.j2"),
+        ("DNA", False, "ont-bulk-gdna.yaml.j2"),
+    ],
+)
+def test_select_builtin_bulk_template(read_type, single_cell, expected):
+    assert select_template(read_type, single_cell, ROOT / "templates" / "seqspec").name == expected
+
+
+def test_select_builtin_single_cell_template():
+    assert select_template("CDNA", True, ROOT / "templates" / "seqspec").name == "parse-evercode-wt-mega-v2-nanopore.yaml.j2"
+
+
+def test_unsupported_template_combination_names_inputs():
+    with pytest.raises(ValueError, match="readType=DNA singleCell=true"):
+        select_template("DNA", True, ROOT / "templates" / "seqspec")
+
+
+def test_measure_fastq_and_merge_overrides(tmp_path):
+    fastq = tmp_path / "sample.fastq"
+    fastq.write_text("@one\nACGT\n+\n!!!!\n@two\nAC\n+\n!!\n")
+    measured = measure_fastq(fastq)
+    assert measured["read_min_length"] == 2
+    assert measured["read_max_length"] == 4
+    assert measured["read_file_size"] == fastq.stat().st_size
+    assert measured["read_md5sum"]
+
+    variables = tmp_path / "variables.json"
+    variables.write_text('{"read_max_length": 99, "library_kit": "override"}')
+    overrides = load_overrides(variables)
+    assert overrides == {"read_max_length": 99, "library_kit": "override"}
+    merged = build_variables(fastq, overrides)
+    assert merged["read_max_length"] == 99
+    assert merged["read_min_length"] == 2
+    assert merged["library_kit"] == "override"
 
 
 def run_script(*args):
