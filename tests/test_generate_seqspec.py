@@ -172,6 +172,47 @@ def test_seqspec_not_found_error(monkeypatch):
         generate_seqspec.run_seqspec("--version")
 
 
+def test_seqspec_031_version_is_accepted_despite_nonzero_exit(monkeypatch):
+    module_spec = importlib.util.spec_from_file_location("generate_seqspec", SCRIPT)
+    generate_seqspec = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(generate_seqspec)
+
+    monkeypatch.setattr(
+        generate_seqspec.subprocess,
+        "run",
+        lambda *args, **kwargs: subprocess.CompletedProcess(args[0], 1, "seqspec 0.3.1\n"),
+    )
+
+    assert generate_seqspec.get_seqspec_version() == (0, 3, 1)
+
+
+@pytest.mark.parametrize(
+    ("version", "expected_calls"),
+    [
+        ((0, 3, 1), [("format", "rendered.yaml", "-o", "output.yaml"), ("check", "output.yaml")]),
+        (
+            (0, 4, 0),
+            [
+                ("upgrade", "rendered.yaml", "-o", "output.yaml"),
+                ("format", "output.yaml", "-o", "output.yaml"),
+                ("check", "output.yaml"),
+            ],
+        ),
+    ],
+)
+def test_finalize_seqspec_uses_version_appropriate_commands(monkeypatch, version, expected_calls):
+    module_spec = importlib.util.spec_from_file_location("generate_seqspec", SCRIPT)
+    generate_seqspec = importlib.util.module_from_spec(module_spec)
+    module_spec.loader.exec_module(generate_seqspec)
+    calls = []
+
+    monkeypatch.setattr(generate_seqspec, "run_seqspec", lambda *args: calls.append(args))
+
+    generate_seqspec.finalize_seqspec(Path("rendered.yaml"), Path("output.yaml"), version)
+
+    assert calls == expected_calls
+
+
 def test_generate_seqspec_with_image_runtime(tmp_path):
     if shutil.which("seqspec") is None:
         pytest.skip("seqspec is unavailable; run this test inside the DOGME image")

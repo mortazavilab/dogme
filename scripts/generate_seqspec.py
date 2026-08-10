@@ -7,12 +7,16 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+import re
 
 try:
     from seqspec_autogeneration import build_variables, load_overrides, render_template, select_template
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
     from seqspec_autogeneration import build_variables, load_overrides, render_template, select_template
+
+SEQSPEC_VERSION_PATTERN = re.compile(r"seqspec\s+(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
+
 
 def run_seqspec(*args: str) -> str:
     command = ["seqspec", *args]
@@ -33,6 +37,42 @@ def run_seqspec(*args: str) -> str:
         output = (exc.stdout or "").strip()
         raise RuntimeError(f"seqspec {' '.join(args)} failed:\n{output}") from exc
     return result.stdout
+
+
+def get_seqspec_version() -> tuple[int, int, int]:
+    try:
+        result = subprocess.run(
+            ["seqspec", "--version"],
+            check=False,
+            text=True,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+        )
+    except FileNotFoundError as exc:
+        raise RuntimeError(
+            "seqspec is not available in the Docker/Apptainer image. "
+            "Install seqspec 0.3.1 or newer."
+        ) from exc
+
+    output = result.stdout or ""
+    match = SEQSPEC_VERSION_PATTERN.search(output)
+    if match is None:
+        raise RuntimeError(f"Could not determine seqspec version:\n{output.strip()}")
+    return tuple(int(value) for value in match.groups())
+
+
+def finalize_seqspec(rendered_path: Path, output_path: Path, version: tuple[int, int, int]) -> None:
+    if version >= (0, 4, 0):
+        run_seqspec("upgrade", str(rendered_path), "-o", str(output_path))
+        run_seqspec("format", str(output_path), "-o", str(output_path))
+    elif version >= (0, 3, 0):
+        run_seqspec("format", str(rendered_path), "-o", str(output_path))
+    else:
+        raise RuntimeError(
+            f"seqspec {'.'.join(str(value) for value in version)} is unsupported; "
+            "install seqspec 0.3.1 or newer."
+        )
+    run_seqspec("check", str(output_path))
 
 
 def main() -> int:
@@ -72,17 +112,7 @@ def main() -> int:
     rendered_path = args.output.with_suffix(".rendered.yaml")
     rendered_path.write_text(rendered)
 
-    # Verify the image exposes the requested CLI before invoking it. This also
-    # gives a useful failure when a host runs the workflow without the image.
-    run_seqspec("--version")
-    run_seqspec("check", "--help")
-    run_seqspec("upgrade", "--help")
-    run_seqspec("format", "--help")
-
-    # seqspec 0.4.0 writes upgraded/ formatted specs to the requested path.
-    run_seqspec("upgrade", str(rendered_path), "-o", str(args.output))
-    run_seqspec("format", str(args.output), "-o", str(args.output))
-    run_seqspec("check", str(args.output))
+    finalize_seqspec(rendered_path, args.output, get_seqspec_version())
     args.output.with_suffix(".variables.json").write_text(
         json.dumps(variables, indent=2, sort_keys=True) + "\n"
     )
