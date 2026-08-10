@@ -9,10 +9,10 @@ import sys
 from pathlib import Path
 
 try:
-    from seqspec_autogeneration import build_variables, load_overrides, select_template
+    from seqspec_autogeneration import build_variables, load_overrides, render_template, select_template
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from seqspec_autogeneration import build_variables, load_overrides, select_template
+    from seqspec_autogeneration import build_variables, load_overrides, render_template, select_template
 
 def run_seqspec(*args: str) -> str:
     command = ["seqspec", *args]
@@ -63,16 +63,12 @@ def main() -> int:
     if args.no_md5:
         variables["read_md5sum"] = None
 
-    try:
-        from jinja2 import Template
-    except ModuleNotFoundError as exc:
-        raise RuntimeError(
-            "Jinja2 is not available in the DOGME Docker/Apptainer image; "
-            "the image must provide Jinja2 for seqspec template rendering."
-        ) from exc
 
     variables.setdefault("read_file_name", args.fastq.name)
-    rendered = Template(args.template.read_text()).render(**variables)
+    try:
+        rendered = render_template(args.template.read_text(), variables)
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError(f"Could not render seqspec template: {exc}") from exc
     rendered_path = args.output.with_suffix(".rendered.yaml")
     rendered_path.write_text(rendered)
 

@@ -218,6 +218,7 @@ process extractfastqTask {
 
 process generateSeqspecTask {
     tag "${params.sample} seqspec"
+    container 'ghcr.io/mortazavilab/dogme-pipeline:latest'
     input:
     path inputFastq
     output:

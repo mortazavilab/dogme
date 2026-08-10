@@ -7,7 +7,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 ## What's New in Dogme 1.3.3
 
 - **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. The reserved `singleCell` and `singleCellKit` parameters currently have no single-cell processing effect.
-- **Image-provided seqspec tooling:** seqspec and Jinja2 are expected inside the configured Docker/Apptainer image, with clear runtime errors when they are unavailable.
+- **Image-provided seqspec tooling:** seqspec is expected inside the configured Docker/Apptainer image; DOGME fills template placeholders itself.
 
 - **fastq CDNA support**: 
   New workflow and entry point to start from an existing CDNA FASTQ, create an unmapped BAM, run minimap2 and kallisto in parallel, then annotate the mapped BAMs.
@@ -224,7 +224,7 @@ The repository includes the Parse Evercode WT mega v2 nanopore template at
 validated inside the DOGME image; run `seqspec check` after rendering before
 using it for production data.
 
-The renderer runs inside the configured Docker or Apptainer image and executes `seqspec upgrade`, `seqspec format`, and `seqspec check`. It publishes the final `${sample}.seqspec.yaml`, the rendered pre-upgrade spec, and the variables JSON under `${fastqDir}/seqspec`.
+The renderer runs inside `ghcr.io/mortazavilab/dogme-pipeline:latest` and executes `seqspec upgrade`, `seqspec format`, and `seqspec check`. DOGME fills template placeholders without Jinja2. Enable Docker or Singularity/Apptainer in the Nextflow configuration; without a container runtime, the task cannot access the image-provided seqspec dependency. It publishes the final `${sample}.seqspec.yaml`, the rendered pre-upgrade spec, and the variables JSON under `${fastqDir}/seqspec`.
 
 `singleCell` defaults to `false`, but it does not enable single-cell processing in this release. `singleCellKit` is reserved for future use. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
 

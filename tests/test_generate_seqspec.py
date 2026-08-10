@@ -19,6 +19,7 @@ load_overrides = seqspec_autogeneration.load_overrides
 measure_fastq = seqspec_autogeneration.measure_fastq
 select_template = seqspec_autogeneration.select_template
 build_variables = seqspec_autogeneration.build_variables
+render_template = seqspec_autogeneration.render_template
 
 
 @pytest.mark.parametrize(
@@ -59,6 +60,18 @@ def test_measure_fastq_and_merge_overrides(tmp_path):
     assert merged["read_max_length"] == 99
     assert merged["read_min_length"] == 2
     assert merged["library_kit"] == "override"
+
+
+def test_render_template_replaces_values_and_arithmetic():
+    assert render_template(
+        "name={{ name }} max={{ read_max_length - 154 }} empty={{ missing_value }}",
+        {"name": "sample", "read_max_length": 200, "missing_value": None},
+    ) == "name=sample max=46 empty=null"
+
+
+def test_render_template_reports_missing_variable():
+    with pytest.raises(KeyError, match="missing seqspec template variable: name"):
+        render_template("{{ name }}", {})
 
 
 def run_script(*args):
@@ -148,8 +161,6 @@ def test_seqspec_not_found_error(monkeypatch):
 def test_generate_seqspec_with_image_runtime(tmp_path):
     if shutil.which("seqspec") is None:
         pytest.skip("seqspec is unavailable; run this test inside the DOGME image")
-    if importlib.util.find_spec("jinja2") is None:
-        pytest.skip("Jinja2 is unavailable; run this test inside the DOGME image")
 
     fastq = tmp_path / "synthetic.fastq"
     fastq.write_text("@read-1\nACGT\n+\n!!!!\n")

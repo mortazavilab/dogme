@@ -4,9 +4,13 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import date
 from pathlib import Path
 from typing import Any
+
+
+PLACEHOLDER = re.compile(r"{{\s*([A-Za-z_][A-Za-z0-9_]*(?:\s*[+-]\s*\d+)?)\s*}}")
 
 
 def select_template(read_type: str, single_cell: bool, template_dir: Path) -> Path:
@@ -85,3 +89,21 @@ def build_variables(fastq: Path, overrides: dict[str, Any] | None = None) -> dic
     variables = measure_fastq(fastq)
     variables.update(overrides or {})
     return variables
+
+
+def render_template(template: str, variables: dict[str, Any]) -> str:
+    def replace(match: re.Match[str]) -> str:
+        expression = re.sub(r"\s+", " ", match.group(1).strip())
+        parts = expression.split(" ")
+        name = parts[0]
+        if name not in variables:
+            raise KeyError(f"missing seqspec template variable: {name}")
+        value = variables[name]
+        if len(parts) == 3:
+            if not isinstance(value, (int, float)):
+                raise TypeError(f"seqspec template variable is not numeric: {name}")
+            offset = int(parts[2])
+            value = value + offset if parts[1] == "+" else value - offset
+        return "null" if value is None else str(value)
+
+    return PLACEHOLDER.sub(replace, template)
