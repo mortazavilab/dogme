@@ -27,7 +27,7 @@ from multiprocessing import get_context
 from multiprocessing.managers import SyncManager
 import pysam
 
-__version__ = "1.3.2"
+__version__ = "1.3.3"
 __author__ = "Elnaz A., Gemini, Ali M."
 CLASSIFICATION_ORDER = ("Known", "ISM", "NIC", "NNC", "Antisense", "Intergenic")
 

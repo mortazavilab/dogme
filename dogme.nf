@@ -20,8 +20,18 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
-def dogmeVersion = "1.3.2"
+def dogmeVersion = "1.3.3"
 def defaultModDir = "${launchDir}/doradoModels"
+
+params.singleCell = params.singleCell == null ? false : params.singleCell
+params.singleCellKit = params.singleCellKit == null ? null : params.singleCellKit
+params.seqspec = params.seqspec == null ? null : params.seqspec
+params.seqspecTemplate = params.seqspecTemplate == null ? null : params.seqspecTemplate
+params.seqspecVariables = params.seqspecVariables == null ? null : params.seqspecVariables
+
+def singleCellEnabled(value) {
+    value instanceof Boolean && value
+}
 
 // Define modificationsMap once here, to be reused across workflows
 def modificationsMap = [
