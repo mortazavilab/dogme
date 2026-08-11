@@ -41,6 +41,20 @@ def select_template(read_type: str, single_cell: bool, template_dir: Path) -> Pa
     return template
 
 
+def load_single_cell_kit_variables(template_dir: Path, kit: str | None) -> dict[str, Any]:
+    if kit is None:
+        return {}
+    kit_file = template_dir / "parse-evercode-kits.json"
+    try:
+        kits = json.loads(kit_file.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Could not read built-in Parse kit variables: {exc}") from exc
+    if kit not in kits:
+        supported = ", ".join(sorted(kits))
+        raise ValueError(f"unsupported singleCellKit={kit}; supported values: {supported}")
+    return kits[kit]
+
+
 def measure_fastq(fastq: Path, calculate_md5: bool = True) -> dict[str, Any]:
     minimum: int | None = None
     maximum: int | None = None
@@ -87,8 +101,13 @@ def load_overrides(path: Path | None) -> dict[str, Any]:
     return value
 
 
-def build_variables(fastq: Path, overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+def build_variables(
+    fastq: Path,
+    defaults: dict[str, Any] | None = None,
+    overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     variables = measure_fastq(fastq)
+    variables.update(defaults or {})
     variables.update(overrides or {})
     return variables
 

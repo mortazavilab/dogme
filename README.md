@@ -185,7 +185,7 @@ By default, the pipeline will create several folders within the launch directory
 
 When DOGME creates a FASTQ from an unmapped BAM, it automatically creates a seqspec artifact beside the FASTQ. Region structure is declared by a built-in assay template; read lengths and file metadata are measured from the generated FASTQ. An unmapped BAM carries no assay geometry, so the artifact does not infer region structure from the BAM.
 
-Single-cell read processing, barcode and UMI extraction, `CB`/`CR`/`UB`/`UR` tagging, and barcode correction are not implemented in this release. `singleCell` and `singleCellKit` are reserved parameters for future work.
+Single-cell read processing, barcode and UMI extraction, `CB`/`CR`/`UB`/`UR` tagging, and barcode correction are not implemented in this release. `singleCellKit` selects bundled metadata for the declared assay geometry; it does not enable read-level single-cell processing.
 
 The built-in template is selected from the run configuration:
 
@@ -218,6 +218,8 @@ params {
 }
 ```
 
+For built-in Parse single-cell specs, `singleCellKit` defaults to `parse-wt-mega-v2`. Set it to either `parse-wt-v2` or `parse-wt-mega-v2` to populate the bundled barcode onlist URLs, checksums, assay metadata, and ONT sequencing metadata. User-provided `seqspecVariables` take precedence over those defaults. The remote onlist file sizes are unavailable in the bundled metadata and are rendered as `null` unless supplied in `seqspecVariables`.
+
 The repository includes the Parse Evercode WT mega v2 nanopore template at
 `templates/parse-evercode-wt-mega-v2-nanopore.yaml.j2`. It is selected for
 `readType = 'CDNA'` with `singleCell = true`. Its 0.4.0 schema has not yet been
@@ -226,7 +228,7 @@ using it for production data.
 
 The renderer runs inside `ghcr.io/mortazavilab/dogme-pipeline:latest` and executes the compatible `seqspec` validation workflow. DOGME fills template placeholders without Jinja2. Enable Docker or Singularity/Apptainer in the Nextflow configuration; without a container runtime, the task cannot access the image-provided seqspec dependency. It publishes only the final `${sample}.seqspec.yaml` beside the generated FASTQ under `${fastqDir}`.
 
-`singleCell` defaults to `false`, but it does not enable single-cell processing in this release. `singleCellKit` is reserved for future use. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
+`singleCell` defaults to `false`, and neither `singleCell` nor `singleCellKit` enables read-level single-cell processing in this release. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
 
 ---
 

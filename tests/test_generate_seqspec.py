@@ -17,6 +17,7 @@ module_spec = importlib.util.spec_from_file_location("seqspec_autogeneration", A
 seqspec_autogeneration = importlib.util.module_from_spec(module_spec)
 module_spec.loader.exec_module(seqspec_autogeneration)
 load_overrides = seqspec_autogeneration.load_overrides
+load_single_cell_kit_variables = seqspec_autogeneration.load_single_cell_kit_variables
 measure_fastq = seqspec_autogeneration.measure_fastq
 select_template = seqspec_autogeneration.select_template
 build_variables = seqspec_autogeneration.build_variables
@@ -42,6 +43,40 @@ def test_select_builtin_single_cell_template():
 def test_unsupported_template_combination_names_inputs():
     with pytest.raises(ValueError, match="readType=DNA singleCell=true"):
         select_template("DNA", True, ROOT / "templates" / "seqspec")
+
+
+@pytest.mark.parametrize("kit", ["parse-wt-v2", "parse-wt-mega-v2"])
+def test_parse_kit_defaults_include_onlist_metadata(kit):
+    variables = load_single_cell_kit_variables(ROOT / "templates" / "seqspec", kit)
+
+    assert variables["assay_id"]
+    assert variables["library_kit"]
+    for barcode in range(1, 4):
+        assert variables[f"barcode_{barcode}_file_id"]
+        assert variables[f"barcode_{barcode}_file_name"].endswith(".txt.gz")
+        assert variables[f"barcode_{barcode}_url"].startswith("https://")
+        assert variables[f"barcode_{barcode}_md5"]
+
+
+def test_parse_kit_defaults_reject_unknown_kit():
+    with pytest.raises(ValueError, match="unsupported singleCellKit=unknown"):
+        load_single_cell_kit_variables(ROOT / "templates" / "seqspec", "unknown")
+
+
+@pytest.mark.parametrize("kit", ["parse-wt-v2", "parse-wt-mega-v2"])
+def test_parse_kit_defaults_render_every_template_placeholder(tmp_path, kit):
+    fastq = tmp_path / "sample.fastq"
+    fastq.write_text("@read\nACGT\n+\n!!!!\n")
+    template = (ROOT / "templates" / "parse-evercode-wt-mega-v2-nanopore.yaml.j2").read_text()
+    variables = build_variables(
+        fastq,
+        load_single_cell_kit_variables(ROOT / "templates" / "seqspec", kit),
+    )
+
+    rendered = render_template(template, variables)
+
+    assert "{{" not in rendered
+    assert f"assay_id: {variables['assay_id']}" in rendered
 
 
 def test_measure_fastq_and_merge_overrides(tmp_path):

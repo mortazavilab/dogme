@@ -1,9 +1,9 @@
 !Assay
-seqspec_version: 0.4.0
-assay_id: Evercode-WT-mega-v2-nanpore
+seqspec_version: 0.3.1
+assay_id: {{ assay_id }}
 doi: "https://docs.google.com/presentation/d/17yKh6xE5b9Mo4DaXx5uPvFZOIHOW0kbK-QsU2ECwx8c/edit#slide=id.g29abb1440dc_0_500"
 date: "13 August 2024"
-name: Parse Evercode mega WT v2 using nanopore
+name: {{ assay_name }}
 description: split-pool ligation-based ONT transcriptome sequencing
 modalities:
   - rna
@@ -99,7 +99,7 @@ library_spec:
           filetype: tsv
           filesize: {{ barcode_1_file_size }}
           url: {{ barcode_1_url }}
-          location: remote
+          location: {{ barcode_1_location }}
           md5: {{ barcode_1_md5 }}
           urltype: https
         regions: null
@@ -129,7 +129,7 @@ library_spec:
           filetype: tsv
           filesize: {{ barcode_2_file_size }}
           url: {{ barcode_2_url }}
-          location: remote
+          location: {{ barcode_2_location }}
           md5: {{ barcode_2_md5 }}
           urltype: https
         regions: null
@@ -159,7 +159,7 @@ library_spec:
           filetype: tsv
           filesize: {{ barcode_3_file_size }}
           url: {{ barcode_3_url }}
-          location: remote
+          location: {{ barcode_3_location }}
           md5: {{ barcode_3_md5 }}
           urltype: https
         regions: null

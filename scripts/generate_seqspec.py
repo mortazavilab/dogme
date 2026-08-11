@@ -10,10 +10,22 @@ from pathlib import Path
 import re
 
 try:
-    from seqspec_autogeneration import build_variables, load_overrides, render_template, select_template
+    from seqspec_autogeneration import (
+        build_variables,
+        load_overrides,
+        load_single_cell_kit_variables,
+        render_template,
+        select_template,
+    )
 except ModuleNotFoundError:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
-    from seqspec_autogeneration import build_variables, load_overrides, render_template, select_template
+    from seqspec_autogeneration import (
+        build_variables,
+        load_overrides,
+        load_single_cell_kit_variables,
+        render_template,
+        select_template,
+    )
 
 SEQSPEC_VERSION_PATTERN = re.compile(r"seqspec\s+(\d+)\.(\d+)\.(\d+)", re.IGNORECASE)
 
@@ -82,11 +94,13 @@ def main() -> int:
     parser.add_argument("--template-dir", type=Path)
     parser.add_argument("--read-type", default="RNA")
     parser.add_argument("--single-cell", action="store_true")
+    parser.add_argument("--single-cell-kit")
     parser.add_argument("--no-md5", action="store_true")
     parser.add_argument("--output", required=True, type=Path)
     parser.add_argument("--fastq", required=True, type=Path)
     args = parser.parse_args()
 
+    uses_builtin_template = args.template is None
     if args.template is None:
         if args.template_dir is None:
             parser.error("--template or --template-dir is required")
@@ -99,7 +113,16 @@ def main() -> int:
     if not args.fastq.is_file():
         parser.error(f"FASTQ does not exist: {args.fastq}")
 
-    variables = build_variables(args.fastq, load_overrides(args.variables))
+    if args.single_cell_kit and not args.single_cell:
+        parser.error("--single-cell-kit requires --single-cell")
+    try:
+        selected_kit = args.single_cell_kit
+        if uses_builtin_template and args.single_cell and selected_kit is None:
+            selected_kit = "parse-wt-mega-v2"
+        kit_variables = load_single_cell_kit_variables(args.template_dir, selected_kit)
+    except (FileNotFoundError, ValueError, RuntimeError) as exc:
+        parser.error(str(exc))
+    variables = build_variables(args.fastq, kit_variables, load_overrides(args.variables))
     if args.no_md5:
         variables["read_md5sum"] = None
 

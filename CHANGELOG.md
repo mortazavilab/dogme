@@ -14,6 +14,7 @@ All notable DOGME changes are documented here.
 - Published the final seqspec artifact beside its FASTQ under `${fastqDir}`.
 - `singleCell`, `singleCellKit`, `seqspecTemplate`, and `seqspecVariables` configuration parameters.
 - Clear runtime errors when the configured Docker/Apptainer image does not provide seqspec.
+- Bundled Parse WT v2 and Parse WT Mega v2 barcode-onlist metadata for default single-cell seqspec rendering.
 
 ### Documentation
 

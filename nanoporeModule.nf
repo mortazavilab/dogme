@@ -232,6 +232,7 @@ process generateSeqspecTask {
         --template-dir ${projectDir}/templates/seqspec \
         --read-type ${params.readType} \
         ${params.singleCell ? '--single-cell' : ''} \
+        ${params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''} \
         ${params.seqspecMd5 ? '' : '--no-md5'} \
         ${params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''} \
         ${params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''} \
