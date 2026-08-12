@@ -22,6 +22,12 @@ measure_fastq = seqspec_autogeneration.measure_fastq
 select_template = seqspec_autogeneration.select_template
 build_variables = seqspec_autogeneration.build_variables
 render_template = seqspec_autogeneration.render_template
+generate_seqspec_spec = importlib.util.spec_from_file_location(
+    "generate_seqspec", SCRIPT
+)
+generate_seqspec = importlib.util.module_from_spec(generate_seqspec_spec)
+generate_seqspec_spec.loader.exec_module(generate_seqspec)
+apply_seqspec_031_onlist_compatibility = generate_seqspec.apply_seqspec_031_onlist_compatibility
 
 
 @pytest.mark.parametrize(
@@ -61,6 +67,22 @@ def test_parse_kit_defaults_include_onlist_metadata(kit):
 def test_parse_kit_defaults_reject_unknown_kit():
     with pytest.raises(ValueError, match="unsupported singleCellKit=unknown"):
         load_single_cell_kit_variables(ROOT / "templates" / "seqspec", "unknown")
+
+
+def test_seqspec_031_remote_onlists_use_urls_for_legacy_checker():
+    variables = {
+        "barcode_1_location": "remote",
+        "barcode_1_file_name": "barcode-1.txt.gz",
+        "barcode_1_url": "https://example.test/barcode-1.txt.gz",
+        "barcode_2_location": "local",
+        "barcode_2_file_name": "barcode-2.txt.gz",
+        "barcode_2_url": "https://example.test/barcode-2.txt.gz",
+    }
+
+    apply_seqspec_031_onlist_compatibility(variables, (0, 3, 1))
+
+    assert variables["barcode_1_file_name"] == variables["barcode_1_url"]
+    assert variables["barcode_2_file_name"] == "barcode-2.txt.gz"
 
 
 @pytest.mark.parametrize("kit", ["parse-wt-v2", "parse-wt-mega-v2"])

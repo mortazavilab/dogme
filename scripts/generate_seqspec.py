@@ -73,6 +73,16 @@ def get_seqspec_version() -> tuple[int, int, int]:
     return tuple(int(value) for value in match.groups())
 
 
+def apply_seqspec_031_onlist_compatibility(variables: dict, version: tuple[int, int, int]) -> None:
+    if version != (0, 3, 1):
+        return
+    for barcode in range(1, 4):
+        filename = f"barcode_{barcode}_file_name"
+        url = f"barcode_{barcode}_url"
+        if variables.get(f"barcode_{barcode}_location") == "remote" and variables.get(url):
+            variables[filename] = variables[url]
+
+
 def finalize_seqspec(rendered_path: Path, output_path: Path, version: tuple[int, int, int]) -> None:
     if version >= (0, 4, 0):
         run_seqspec("upgrade", str(rendered_path), "-o", str(output_path))
@@ -123,6 +133,8 @@ def main() -> int:
     except (FileNotFoundError, ValueError, RuntimeError) as exc:
         parser.error(str(exc))
     variables = build_variables(args.fastq, kit_variables, load_overrides(args.variables))
+    seqspec_version = get_seqspec_version()
+    apply_seqspec_031_onlist_compatibility(variables, seqspec_version)
     if args.no_md5:
         variables["read_md5sum"] = None
 
@@ -135,7 +147,7 @@ def main() -> int:
     rendered_path = args.output.with_suffix(".rendered.yaml")
     rendered_path.write_text(rendered)
 
-    finalize_seqspec(rendered_path, args.output, get_seqspec_version())
+    finalize_seqspec(rendered_path, args.output, seqspec_version)
     args.output.with_suffix(".variables.json").write_text(
         json.dumps(variables, indent=2, sort_keys=True) + "\n"
     )
