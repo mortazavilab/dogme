@@ -2,6 +2,12 @@
 
 All notable DOGME changes are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Added single-cell kallisto/bustools quantification equivalent to the requested `kb count` settings, including long-read mode, custom technology parsing, barcode whitelist correction, and support for precomputed or auto-built `k=63` indexes.
+
 ## [1.3.3] - 2026-08-10
 
 ### Added

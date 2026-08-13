@@ -247,9 +247,7 @@ process splitcodeTask {
     input:
     tuple path(seqspecFile), path(inputFastq)
     output:
-    path "${params.sample}_barcode.fastq.gz"
-    path "${params.sample}_cDNA.fastq.gz"
-    path "${params.sample}_umi.fastq.gz"
+    tuple path(cDNAFile), path(umiFile), path(barcodeFile)
     publishDir "${params.fastqDir}/single-cell", mode: 'copy'
     script:
     def outputFastq = "${params.sample}.splitcode.fastq.gz"
@@ -284,6 +282,33 @@ process splitcodeTask {
     """
 }
 
+process singleCellKallistoTask {
+    tag "${genomeName} single-cell"
+    input:
+    tuple path(cDNAFile), path(umiFile), path(barcodeFile), path(indexFile), path(t2gFile), val(genomeName)
+    output:
+    path "${params.sample}_${genomeName}"
+    publishDir "${params.kallistoDir}/${genomeName}/single-cell", mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    output_dir="${params.sample}_${genomeName}"
+    mkdir -p "\${output_dir}"
+    kallisto bus --long --threshold 0.8 -x '2,0,24:1,0,10:0,0,0' \\
+        -i ${indexFile} -t ${task.cpus} -o "\${output_dir}" \\
+        "${cDNAFile}" "${umiFile}" "${barcodeFile}"
+    bustools whitelist -o "\${output_dir}/whitelist.txt" "\${output_dir}/output.bus"
+    bustools correct -w "\${output_dir}/whitelist.txt" \\
+        -o "\${output_dir}/corrected.bus" "\${output_dir}/output.bus"
+    bustools sort -t ${task.cpus} "\${output_dir}/corrected.bus" \\
+        -o "\${output_dir}/sorted.bus"
+    bustools count "\${output_dir}/sorted.bus" \\
+        -t "\${output_dir}/transcripts.txt" \\
+        -e "\${output_dir}/matrix.ec" \\
+        -o "\${output_dir}/count" --cm -m -g ${t2gFile}
+    """
+}
+
 process makeKallistoRefsTask {
     tag "${genomeName}"
     input:
@@ -308,8 +333,7 @@ process kallistoIndexTask {
     script:
     """
     . ${params.scriptEnv}
-    #kallisto index -t 8 -i ${genomeName}.idx -k 63 -d ${genomeFasta} ${cdnaFa} ${intronsFa}
-    kallisto index -t 8 -i ${genomeName}.idx -k 31 ${cdnaFa}
+    kallisto index -t 8 -i ${genomeName}.idx -k 63 ${cdnaFa}
     """
 }
 
@@ -566,14 +590,29 @@ workflow kallistoWorkflow {
             .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
         refFiles = makeKallistoRefsTask(kallisto_refs_ch)
         indexFiles = kallistoIndexTask(refFiles)
-        kallistoInput = fastqFile.combine(indexFiles)
-            .map { fastq, genomeName, idx, t2g -> tuple(fastq, idx, t2g, genomeName) }
-        kallistoTask(kallistoInput)
-    } else {
-        kallistoInput = fastqFile.map { fastq ->
-            tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+        if (params.singleCell) {
+            singleCellInput = splitcodeTask.out.combine(indexFiles)
+                .map { cDNA, umi, barcode, genomeName, idx, t2g ->
+                    tuple(cDNA, umi, barcode, idx, t2g, genomeName)
+                }
+            singleCellKallistoTask(singleCellInput)
+        } else {
+            kallistoInput = fastqFile.combine(indexFiles)
+                .map { fastq, genomeName, idx, t2g -> tuple(fastq, idx, t2g, genomeName) }
+            kallistoTask(kallistoInput)
         }
-        kallistoTask(kallistoInput)
+    } else {
+        if (params.singleCell) {
+            singleCellInput = splitcodeTask.out.map { cDNA, umi, barcode ->
+                tuple(cDNA, umi, barcode, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+            }
+            singleCellKallistoTask(singleCellInput)
+        } else {
+            kallistoInput = fastqFile.map { fastq ->
+                tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+            }
+            kallistoTask(kallistoInput)
+        }
     }
 }
 
