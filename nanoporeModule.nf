@@ -247,8 +247,9 @@ process splitcodeTask {
     input:
     tuple path(seqspecFile), path(inputFastq)
     output:
-    path "ONT.config"
-    path "${params.sample}.splitcode.fastq.gz"
+    path "${params.sample}_barcode.fastq.gz"
+    path "${params.sample}_cDNA.fastq.gz"
+    path "${params.sample}_umi.fastq.gz"
     publishDir "${params.fastqDir}/single-cell", mode: 'copy'
     script:
     def outputFastq = "${params.sample}.splitcode.fastq.gz"
@@ -257,6 +258,8 @@ process splitcodeTask {
     seqspec index -m rna -s file -t splitcode ${seqspecFile} > ONT.config
     sed -i 's/3:3:3/1:1:1/g' ONT.config
     splitcode -c ONT.config -t 2 ${inputFastq} -o ${outputFastq}
+    python ${projectDir}/scripts/process_splitcode_fastqs.py \
+        --sample "${params.sample}"
     """
 }
 
