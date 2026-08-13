@@ -4,10 +4,10 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## What's New in Dogme 1.3.3
+## What's New in Dogme 1.4.0
 
+- **End-to-end single-cell cDNA workflow:** With `readType = 'CDNA'` and `singleCell = true`, DOGME generates and validates seqspec metadata, splits and corrects cDNA/UMI/barcode FASTQs with splitcode, and runs single-cell kallisto/bustools quantification.
 - **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. Single-cell cDNA runs additionally generate a splitcode configuration and processed FASTQ.
-- **Image-provided seqspec tooling:** seqspec is expected inside the configured Docker/Apptainer image; DOGME fills template placeholders itself.
 
 - **fastq CDNA support**: 
   New workflow and entry point to start from an existing CDNA FASTQ, create an unmapped BAM, run minimap2 and kallisto in parallel, then annotate the mapped BAMs.
@@ -17,6 +17,8 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   New workflow entry point to annotate mapped BAMs with transcript information using `annotateRNA.py`. This produces annotated BAM files, TALON outputs and QC summary CSVs for each genome.
 - **Standalone kallisto entry point:**  
   Added a `kallisto` entry point that starts from unmapped BAMs, extracts FASTQ, and runs the kallisto long-read quantification steps without re-running basecalling or remapping.
+- **Single-cell kallisto/bustools quantification:**
+  Added a `kb count`-equivalent workflow using kallisto and bustools alone, with long-read mode, technology string `2,0,24:1,0,10:0,0,0`, barcode whitelist correction, and support for precomputed or auto-built `k=63` indexes.
 - **Automatic GTF-to-Junction BED Conversion:**  
   The pipeline now automatically converts GTF files to junction BED files for minimap2 spliced alignment, ensuring correct handling of RNA and cDNA mapping.
 - **Increased Maximum Intron Size:**  
@@ -33,7 +35,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   - Processes include retry/error strategies for robustness of long-running tasks.
 
 
-Dogme 1.3.3 carries forward the 1.3.2 workflow updates, including the 2-pass `annotateRNA.py` processing, `reconcileBams.py`, and expanded BAM/FASTQ reporting in the final QC summary.
+Dogme 1.4.0 carries forward the 1.3.3 workflow updates, including seqspec generation, single-cell cDNA splitting, and single-cell kallisto/bustools quantification.
 
 ---
 
