@@ -20,7 +20,7 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
-def dogmeVersion = "1.3.3"
+def dogmeVersion = "1.4.0"
 def defaultModDir = "${launchDir}/doradoModels"
 
 params.singleCell = params.singleCell == null ? false : params.singleCell

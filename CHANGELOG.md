@@ -2,7 +2,7 @@
 
 All notable DOGME changes are documented here.
 
-## [Unreleased]
+## [1.4.0] - 2026-08-13
 
 ### Added
 
