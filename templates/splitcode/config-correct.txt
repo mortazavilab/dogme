@@ -1,4 +1,4 @@
-@extract <13G_barcode{*}>
+@extract <barcode{*}>
 tags	distances	ids	groups	minFindsG	locations
 r1_R.txt$	1:1:1	r1_R	round1	1	1,16,24
 r1_T.txt$	1:1:1	r1_T	round1	1	1,16,24
