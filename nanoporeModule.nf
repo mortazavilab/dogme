@@ -247,7 +247,7 @@ process splitcodeTask {
     input:
     tuple path(seqspecFile), path(inputFastq)
     output:
-    tuple path(cDNAFile), path(umiFile), path(barcodeFile)
+    tuple path("${params.sample}_cDNA.fastq.gz"), path("${params.sample}_umi.fastq.gz"), path("${params.sample}_barcode.fastq.gz")
     publishDir "${params.fastqDir}/single-cell", mode: 'copy'
     script:
     def outputFastq = "${params.sample}.splitcode.fastq.gz"
