@@ -271,13 +271,18 @@ process splitcodeTask {
         -o "${params.sample}_cDNA.fastq.gz,_cDNA.unselected.fastq.gz" \
         _cDNA.fastq _barcode.fastq -t 2
     splitcode -c ${projectDir}/templates/splitcode/config-correct.txt \
+        --nFastqs=2 --select=1 --gzip \
+        -o "_barcode.unselected.fastq.gz,${params.sample}_barcode.filtered.fastq.gz" \
+        _cDNA.fastq _barcode.fastq -t 2
+    splitcode -c ${projectDir}/templates/splitcode/config-correct.txt \
         --nFastqs=2 --select=0 --gzip \
         -o "${params.sample}_umi.fastq.gz,_umi.unselected.fastq.gz" \
         _umi.fastq _barcode.fastq -t 2
     splitcode -c ${projectDir}/templates/splitcode/config.mergeRT \
-        -o "${params.sample}_barcode.fastq" "${params.sample}_barcode.fastq.gz" -t 2
+        -o "${params.sample}_barcode.fastq" "${params.sample}_barcode.filtered.fastq.gz" -t 2
     gzip -f "${params.sample}_barcode.fastq"
-    rm -f _cDNA.unselected.fastq.gz _umi.unselected.fastq.gz
+    rm -f _barcode.unselected.fastq.gz "${params.sample}_barcode.filtered.fastq.gz" \
+        _cDNA.unselected.fastq.gz _umi.unselected.fastq.gz
     """
 }
 
