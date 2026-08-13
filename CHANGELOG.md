@@ -27,6 +27,7 @@ All notable DOGME changes are documented here.
 
 - FASTQ metadata measurement now supports gzip-compressed `.fastq.gz` inputs.
 - Seqspec rendering now supports `seqspec 0.3.1`, including images where `seqspec --version` exits nonzero after reporting its version. Schema 0.3 templates are formatted and checked without the 0.4-only upgrade step.
+- Single-cell splitcode correction now supplies the required two output paths for paired FASTQ processing while selecting only the primary output, avoiding splitcode 0.31.6 output-count failures.
 
 ## [1.3.2]
 
