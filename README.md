@@ -186,7 +186,7 @@ When DOGME creates a FASTQ from an unmapped BAM, it automatically creates a seqs
 
 Single-cell read processing is enabled for `readType = 'CDNA'` with `singleCell = true`. After seqspec generation, DOGME creates `ONT.config`, normalizes splitcode's `3:3:3` geometry to `1:1:1`, and runs `splitcode` with two threads. The original FASTQ remains available, and the combined `${sample}_barcode.fastq.gz`, `${sample}_cDNA.fastq.gz`, and `${sample}_umi.fastq.gz` files are published under `${fastqDir}/single-cell`.
 
-The task combines the splitcode `c_*`, `f_*`, `r_*`, and `rc_*` cDNA, UMI, and barcode files into the three published FASTQs. These files are the handoff for the separate single-cell quantification workflow using `kb count` and technology string `2,0,24:1,0,10:0,0,0`. Barcode correction and `CB`/`CR`/`UB`/`UR` tagging are not performed by this splitcode task.
+The task combines the splitcode `c_*`, `f_*`, `r_*`, and `rc_*` cDNA, UMI, and barcode files, then applies the bundled `config-correct.txt` and `config.mergeRT` splitcode passes. It publishes three final FASTQs: `${sample}_barcode.fastq.gz`, `${sample}_cDNA.fastq.gz`, and `${sample}_umi.fastq.gz`. These files are the handoff for the separate single-cell quantification workflow using `kb count` and technology string `2,0,24:1,0,10:0,0,0`. Barcode correction and `CB`/`CR`/`UB`/`UR` tagging are not performed by this splitcode task.
 
 The built-in template is selected from the run configuration:
 

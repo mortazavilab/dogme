@@ -15,7 +15,7 @@ All notable DOGME changes are documented here.
 - `singleCell`, `singleCellKit`, `seqspecTemplate`, and `seqspecVariables` configuration parameters.
 - Clear runtime errors when the configured Docker/Apptainer image does not provide seqspec.
 - Bundled Parse WT v2 and Parse WT Mega v2 barcode-onlist metadata for default single-cell seqspec rendering.
-- Single-cell cDNA splitcode processing after seqspec generation, including normalized `ONT.config` geometry and published combined cDNA/UMI/barcode FASTQs under `${fastqDir}/single-cell`.
+- Single-cell cDNA splitcode processing after seqspec generation, including normalized `ONT.config` geometry, bundled correction/mergeRT passes, and published combined cDNA/UMI/barcode FASTQs under `${fastqDir}/single-cell`.
 
 ### Documentation
 

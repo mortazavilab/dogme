@@ -255,11 +255,26 @@ process splitcodeTask {
     def outputFastq = "${params.sample}.splitcode.fastq.gz"
     """
     . ${params.scriptEnv}
+    cp ${projectDir}/templates/splitcode/r1_R.txt .
+    cp ${projectDir}/templates/splitcode/r1_T.txt .
+    cp ${projectDir}/templates/splitcode/r2_3.txt .
     seqspec index -m rna -s file -t splitcode ${seqspecFile} > ONT.config
     sed -i 's/3:3:3/1:1:1/g' ONT.config
     splitcode -c ONT.config -t 2 ${inputFastq} -o ${outputFastq}
     python ${projectDir}/scripts/process_splitcode_fastqs.py \
         --sample "${params.sample}"
+    gunzip -c "${params.sample}_cDNA.fastq.gz" > _cDNA.fastq
+    gunzip -c "${params.sample}_umi.fastq.gz" > _umi.fastq
+    gunzip -c "${params.sample}_barcode.fastq.gz" > _barcode.fastq
+    splitcode -c ${projectDir}/templates/splitcode/config-correct.txt \
+        --nFastqs=2 --select=0 --gzip \
+        -o "${params.sample}_cDNA.fastq.gz" _cDNA.fastq _barcode.fastq -t 2
+    splitcode -c ${projectDir}/templates/splitcode/config-correct.txt \
+        --nFastqs=2 --select=0 --gzip \
+        -o "${params.sample}_umi.fastq.gz" _umi.fastq _barcode.fastq -t 2
+    splitcode -c ${projectDir}/templates/splitcode/config.mergeRT \
+        -o "${params.sample}_barcode.fastq" "${params.sample}_barcode.fastq.gz" -t 2
+    gzip -f "${params.sample}_barcode.fastq"
     """
 }
 
