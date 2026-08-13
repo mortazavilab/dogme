@@ -241,6 +241,25 @@ process generateSeqspecTask {
     """
 }
 
+process splitcodeTask {
+    tag "${params.sample} splitcode"
+    container 'ghcr.io/mortazavilab/dogme-pipeline:latest'
+    input:
+    tuple path(seqspecFile), path(inputFastq)
+    output:
+    path "ONT.config"
+    path "${params.sample}.splitcode.fastq.gz"
+    publishDir "${params.fastqDir}/single-cell", mode: 'copy'
+    script:
+    def outputFastq = "${params.sample}.splitcode.fastq.gz"
+    """
+    . ${params.scriptEnv}
+    seqspec index -m rna -s file -t splitcode ${seqspecFile} > ONT.config
+    sed -i 's/3:3:3/1:1:1/g' ONT.config
+    splitcode -c ONT.config -t 2 ${inputFastq} -o ${outputFastq}
+    """
+}
+
 process makeKallistoRefsTask {
     tag "${genomeName}"
     input:
@@ -510,7 +529,13 @@ workflow kallistoWorkflow {
     main:
     fastqFile = extractfastqTask(unmapped_bams_ch)
 
-    generateSeqspecTask(fastqFile)
+    seqspecFile = generateSeqspecTask(fastqFile)
+
+    if (params.readType == 'CDNA' && params.singleCell) {
+        splitcodeInput = fastqFile.combine(seqspecFile)
+            .map { fastq, spec -> tuple(spec, fastq) }
+        splitcodeTask(splitcodeInput)
+    }
 
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)

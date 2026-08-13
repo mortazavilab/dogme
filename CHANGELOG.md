@@ -15,12 +15,13 @@ All notable DOGME changes are documented here.
 - `singleCell`, `singleCellKit`, `seqspecTemplate`, and `seqspecVariables` configuration parameters.
 - Clear runtime errors when the configured Docker/Apptainer image does not provide seqspec.
 - Bundled Parse WT v2 and Parse WT Mega v2 barcode-onlist metadata for default single-cell seqspec rendering.
+- Single-cell cDNA splitcode processing after seqspec generation, including normalized `ONT.config` geometry and a published processed FASTQ under `${fastqDir}/single-cell`.
 
 ### Documentation
 
 - Documented seqspec artifact generation from supplied templates and variables. The artifact records declared geometry; it is not inferred from FASTQ or BAM data.
 - Documented the Evercode template as an explicit input; its 0.4.0 schema remains unvalidated until it is rendered and checked inside the DOGME image.
-- Documented that single-cell read processing, barcode/UMI extraction, `CB`/`CR`/`UB`/`UR` tagging, and barcode correction are not implemented. `singleCell` and `singleCellKit` remain reserved parameters.
+- Documented single-cell cDNA splitcode processing, its shared DOGME image runtime requirement, and the future three-FASTQ handoff for `kb count`.
 
 ### Fixed
 

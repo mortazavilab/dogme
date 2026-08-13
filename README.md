@@ -6,7 +6,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ## What's New in Dogme 1.3.3
 
-- **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. The reserved `singleCell` and `singleCellKit` parameters currently have no single-cell processing effect.
+- **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. Single-cell cDNA runs additionally generate a splitcode configuration and processed FASTQ.
 - **Image-provided seqspec tooling:** seqspec is expected inside the configured Docker/Apptainer image; DOGME fills template placeholders itself.
 
 - **fastq CDNA support**: 
@@ -109,7 +109,6 @@ params {
     topDir = "${launchDir}"
 
     // Optional seqspec generation for FASTQs created by DOGME.
-    // Reserved for future single-cell processing; currently has no effect.
     singleCell = false
     singleCellKit = null
     seqspecTemplate = null
@@ -185,7 +184,9 @@ By default, the pipeline will create several folders within the launch directory
 
 When DOGME creates a FASTQ from an unmapped BAM, it automatically creates a seqspec artifact beside the FASTQ. Region structure is declared by a built-in assay template; read lengths and file metadata are measured from the generated FASTQ. An unmapped BAM carries no assay geometry, so the artifact does not infer region structure from the BAM.
 
-Single-cell read processing, barcode and UMI extraction, `CB`/`CR`/`UB`/`UR` tagging, and barcode correction are not implemented in this release. `singleCellKit` selects bundled metadata for the declared assay geometry; it does not enable read-level single-cell processing.
+Single-cell read processing is enabled for `readType = 'CDNA'` with `singleCell = true`. After seqspec generation, DOGME creates `ONT.config`, normalizes splitcode's `3:3:3` geometry to `1:1:1`, and runs `splitcode` with two threads. The original FASTQ remains available, and the processed `${sample}.splitcode.fastq.gz` plus `ONT.config` are published under `${fastqDir}/single-cell`.
+
+The splitcode output is the handoff for the separate single-cell quantification workflow. A subsequent step will derive the cDNA, UMI, and barcode FASTQs required by `kb count`, using the technology string `2,0,24:1,0,10:0,0,0`. Barcode correction and `CB`/`CR`/`UB`/`UR` tagging are not performed by this splitcode task.
 
 The built-in template is selected from the run configuration:
 
@@ -226,9 +227,9 @@ The repository includes the Parse Evercode WT mega v2 nanopore template at
 validated inside the DOGME image; run `seqspec check` after rendering before
 using it for production data.
 
-The renderer runs inside `ghcr.io/mortazavilab/dogme-pipeline:latest` and executes the compatible `seqspec` validation workflow. DOGME fills template placeholders without Jinja2. Enable Docker or Singularity/Apptainer in the Nextflow configuration; without a container runtime, the task cannot access the image-provided seqspec dependency. It publishes only the final `${sample}.seqspec.yaml` beside the generated FASTQ under `${fastqDir}`.
+The renderer and splitcode task run inside `ghcr.io/mortazavilab/dogme-pipeline:latest` by default. The image must provide both `seqspec` and `splitcode` on `PATH`. DOGME fills template placeholders without Jinja2. Enable Docker or Singularity/Apptainer in the Nextflow configuration; without a container runtime, the tasks cannot access these image-provided dependencies. Seqspec artifacts are published beside the generated FASTQ under `${fastqDir}`, while splitcode outputs are published under `${fastqDir}/single-cell`.
 
-`singleCell` defaults to `false`, and neither `singleCell` nor `singleCellKit` enables read-level single-cell processing in this release. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
+`singleCell` defaults to `false`, and splitcode runs only for `readType = 'CDNA'` with `singleCell = true`. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
 
 ---
 
