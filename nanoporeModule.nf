@@ -87,7 +87,7 @@ process doradoDemuxTask {
     """
     . ${params.scriptEnv}
     mkdir -p demux
-    dorado demux --output-dir demux ${inputBam}
+    dorado demux --kit-name ${params.kitName} --output-dir demux ${inputBam}
     """
 }
 
@@ -834,6 +834,7 @@ workflow mainWorkflow {
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
     def genome_annot_ch = nextflow.Channel.fromList(params.genome_annot_refs)
+    def demuxAnnotationBams = Channel.empty()
     if (params.kitName) {
         demuxedBams = doradoDemuxTask(unmappedbam)
         classifiedBams = demuxedBams.demuxed_bams
@@ -860,10 +861,8 @@ workflow mainWorkflow {
             }
         demuxMappedResults = demuxMinimapTask(demuxMappedBams)
         if (params.readType == 'RNA' || params.readType == 'CDNA') {
-            demuxMappedResults
+            demuxAnnotationBams = demuxMappedResults
                 .map { bam, bai, genomeName, sampleName -> tuple(bam, bai, genomeName) }
-                .set { demuxAnnotationBams }
-            annotateRNAWorkflow(demuxAnnotationBams)
         }
         if (params.readType == 'RNA' || params.readType == 'DNA') {
             demuxModificationWorkflow(demuxMappedResults)
@@ -887,7 +886,7 @@ workflow mainWorkflow {
     }
         // Add annotation step for RNA or CDNA
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
-        annotateRNAWorkflow(mappedBams)
+        annotateRNAWorkflow(mappedBams.mix(demuxAnnotationBams))
     }
 }
 
