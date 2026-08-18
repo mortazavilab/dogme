@@ -8,6 +8,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 - **End-to-end single-cell cDNA workflow:** With `readType = 'CDNA'` and `singleCell = true`, DOGME generates and validates seqspec metadata, splits and corrects cDNA/UMI/barcode FASTQs with splitcode, and runs single-cell kallisto/bustools quantification.
 - **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. Single-cell cDNA runs additionally generate a splitcode configuration and processed FASTQ.
+- **Optional Dorado demultiplexing:** Set `kitName` to classify and demultiplex barcoded reads. Classified reads use `${sample}.${barcode}` output names and run through barcode-aware mapping, bulk kallisto, annotation, and RNA/DNA modification processing; unclassified reads are published without downstream analysis.
 
 - **fastq CDNA support**: 
   New workflow and entry point to start from an existing CDNA FASTQ, create an unmapped BAM, run minimap2 and kallisto in parallel, then annotate the mapped BAMs.
@@ -115,6 +116,8 @@ params {
     singleCellKit = null
     seqspecTemplate = null
     seqspecVariables = null
+    // Optional Dorado barcode kit identifier. Leave null to disable demultiplexing.
+    kitName = null
 
     // the following file should be edited to add all the necessary paths for commands such as
     // dorado, samtools, minimap2, kallisto, and bustools
@@ -142,6 +145,16 @@ params {
 ```
   
 Be sure to change the process section of the example config file to reflect your cluster environment. 
+
+### Optional Dorado demultiplexing
+
+Set `kitName` to the Dorado kit identifier to enable barcode classification and demultiplexing during the `main` or `basecall` workflow:
+
+```
+kitName = 'SQK-RNA004'
+```
+
+Leave `kitName` unset, `null`, or blank to preserve the normal single-sample basecalling behavior. When enabled, Dorado publishes barcode BAMs below `${dorDir}/demux` and classified BAMs below `${bamDir}` using the `${sample}.${barcode}` prefix. Classified RNA and cDNA reads are mapped, extracted to barcode-specific FASTQs, quantified with bulk kallisto, and annotated. Classified RNA and DNA reads also run through barcode-specific modkit pileup and BED filtering. Unclassified and no-barcode BAMs are published but are not analyzed. Single-cell cDNA routing and run-level aggregate reports are not yet enabled for demultiplexed runs. The exact kit identifier must be supported by the Dorado version installed in the execution container or profile.
 
 ---
 
