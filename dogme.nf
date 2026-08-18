@@ -30,6 +30,11 @@ params.seqspecTemplate = params.seqspecTemplate == null ? null : params.seqspecT
 params.seqspecVariables = params.seqspecVariables == null ? null : params.seqspecVariables
 params.seqspecMd5 = params.seqspecMd5 == null ? true : params.seqspecMd5
 params.kitName = params.kitName == null ? null : params.kitName.toString().trim()
+params.keepBarcodes = (params.keepBarcodes == null || params.keepBarcodes.toString().trim() == '') ? null : params.keepBarcodes.toString().trim().toInteger()
+
+if (params.keepBarcodes != null && params.keepBarcodes < 1) {
+    throw new IllegalArgumentException("keepBarcodes must be a positive integer or null")
+}
 
 def singleCellEnabled(value) {
     value instanceof Boolean && value

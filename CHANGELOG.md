@@ -6,9 +6,19 @@ All notable DOGME changes are documented here.
 
 ### Added
 
-- Added optional Dorado barcode demultiplexing through the `kitName` parameter. When configured, DOGME publishes classified BAMs with `${sample}.${barcode}` names and keeps unclassified/no-barcode BAMs as publish-only outputs.
+- Added optional Dorado barcode demultiplexing through the `kitName` parameter. When configured, DOGME publishes classified BAMs with `${sample}.bcNN` names and keeps unclassified/no-barcode BAMs as publish-only outputs.
 - Added barcode-aware mapping, bulk kallisto FASTQ/quantification, RNA/cDNA annotation, and RNA/DNA modkit processing for demultiplexed reads.
 - Added `kitName = null` to the bundled configuration examples and test profiles.
+- Added optional `keepBarcodes` filtering to retain the specified number of highest-read-count classified barcodes before downstream analysis.
+- Added `${sample}.demux_summary.tsv`, reporting read counts, percentages, and downstream-retention status for every Dorado demultiplexing category.
+
+### Fixed
+
+- Demultiplex inline-classified Dorado basecalls with `--no-classify`, preserving classifications after barcode trimming instead of attempting a second classification pass.
+- Run QC and inventory reporting only after mapping, quantification, annotation, and modification branches have completed.
+- Preserved barcode identifiers through demultiplexed BAM, FASTQ, SeqSpec, Kallisto, mapping, annotation, and modification outputs.
+- Generate a per-barcode FASTQ and SeqSpec artifact for demultiplexed RNA and cDNA reads.
+- Allow barcode modification branches with empty mapped strands or no detected modification calls to complete without failing.
 
 ### Documentation
 
