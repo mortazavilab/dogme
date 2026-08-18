@@ -2,6 +2,18 @@
 
 All notable DOGME changes are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Added optional Dorado barcode demultiplexing through the `kitName` parameter. When configured, DOGME publishes classified BAMs with `${sample}.${barcode}` names and keeps unclassified/no-barcode BAMs as publish-only outputs.
+- Added barcode-aware mapping, bulk kallisto FASTQ/quantification, RNA/cDNA annotation, and RNA/DNA modkit processing for demultiplexed reads.
+- Added `kitName = null` to the bundled configuration examples and test profiles.
+
+### Documentation
+
+- Documented the opt-in demultiplexing configuration, output locations, barcode naming, and current single-cell/reporting limitations.
+
 ## [1.4.0] - 2026-08-13
 
 ### Added

@@ -29,6 +29,7 @@ params.seqspec = params.seqspec == null ? null : params.seqspec
 params.seqspecTemplate = params.seqspecTemplate == null ? null : params.seqspecTemplate
 params.seqspecVariables = params.seqspecVariables == null ? null : params.seqspecVariables
 params.seqspecMd5 = params.seqspecMd5 == null ? true : params.seqspecMd5
+params.kitName = params.kitName == null ? null : params.kitName.toString().trim()
 
 def singleCellEnabled(value) {
     value instanceof Boolean && value
