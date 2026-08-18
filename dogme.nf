@@ -23,12 +23,12 @@ def getParamOrDefault(param, defaultValue) {
 def dogmeVersion = "1.4.0"
 def defaultModDir = "${launchDir}/doradoModels"
 
-params.singleCell = params.singleCell == null ? false : params.singleCell
-params.singleCellKit = params.singleCellKit == null ? null : params.singleCellKit
-params.seqspec = params.seqspec == null ? null : params.seqspec
-params.seqspecTemplate = params.seqspecTemplate == null ? null : params.seqspecTemplate
-params.seqspecVariables = params.seqspecVariables == null ? null : params.seqspecVariables
-params.seqspecMd5 = params.seqspecMd5 == null ? true : params.seqspecMd5
+params.singleCell = params.containsKey('singleCell') ? params.singleCell : false
+params.singleCellKit = params.containsKey('singleCellKit') ? params.singleCellKit : null
+params.seqspec = params.containsKey('seqspec') ? params.seqspec : null
+params.seqspecTemplate = params.containsKey('seqspecTemplate') ? params.seqspecTemplate : null
+params.seqspecVariables = params.containsKey('seqspecVariables') ? params.seqspecVariables : null
+params.seqspecMd5 = params.containsKey('seqspecMd5') ? params.seqspecMd5 : true
 params.kitName = params.kitName == null ? null : params.kitName.toString().trim()
 params.keepBarcodes = (params.keepBarcodes == null || params.keepBarcodes.toString().trim() == '') ? null : params.keepBarcodes.toString().trim().toInteger()
 

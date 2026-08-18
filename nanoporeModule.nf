@@ -435,11 +435,11 @@ process demuxGenerateSeqspecTask {
     python ${projectDir}/scripts/generate_seqspec.py \
         --template-dir ${projectDir}/templates/seqspec \
         --read-type ${params.readType} \
-        ${params.singleCell ? '--single-cell' : ''} \
-        ${params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''} \
-        ${params.seqspecMd5 ? '' : '--no-md5'} \
-        ${params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''} \
-        ${params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''} \
+        ${(params.containsKey('singleCell') && params.singleCell) ? '--single-cell' : ''} \
+        ${(params.containsKey('singleCellKit') && params.singleCellKit) ? "--single-cell-kit ${params.singleCellKit}" : ''} \
+        {(params.containsKey('seqspecMd5') && params.seqspecMd5) ? '' : '--no-md5'} \
+        ${(params.containsKey('seqspecTemplate') && params.seqspecTemplate) ? "--template ${params.seqspecTemplate}" : ''} \
+        ${(params.containsKey('seqspecVariables') && params.seqspecVariables) ? "--variables ${params.seqspecVariables}" : ''} \
         --fastq ${inputFastq} \
         --output ${outputSpec}
     """
@@ -460,11 +460,11 @@ process generateSeqspecTask {
     python ${projectDir}/scripts/generate_seqspec.py \
         --template-dir ${projectDir}/templates/seqspec \
         --read-type ${params.readType} \
-        ${params.singleCell ? '--single-cell' : ''} \
-        ${params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''} \
-        ${params.seqspecMd5 ? '' : '--no-md5'} \
-        ${params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''} \
-        ${params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''} \
+        ${(params.containsKey('singleCell') && params.singleCell) ? '--single-cell' : ''} \
+        ${(params.containsKey('singleCellKit') && params.singleCellKit) ? "--single-cell-kit ${params.singleCellKit}" : ''} \
+        {(params.containsKey('seqspecMd5') && params.seqspecMd5) ? '' : '--no-md5'} \
+        ${(params.containsKey('seqspecTemplate') && params.seqspecTemplate) ? "--template ${params.seqspecTemplate}" : ''} \
+        ${(params.containsKey('seqspecVariables') && params.seqspecVariables) ? "--variables ${params.seqspecVariables}" : ''} \
         --fastq ${inputFastq} \
         --output ${outputSpec}
     """
@@ -849,7 +849,7 @@ workflow kallistoWorkflow {
 
     seqspecFile = generateSeqspecTask(fastqFile)
 
-    if (params.readType == 'CDNA' && params.singleCell) {
+    if (params.readType == 'CDNA' && params.containsKey('singleCell') && params.singleCell) {
         splitcodeInput = fastqFile.combine(seqspecFile)
             .map { fastq, spec -> tuple(spec, fastq) }
         splitcodeTask(splitcodeInput)
@@ -860,7 +860,7 @@ workflow kallistoWorkflow {
             .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
         refFiles = makeKallistoRefsTask(kallisto_refs_ch)
         indexFiles = kallistoIndexTask(refFiles)
-        if (params.singleCell) {
+        if (params.containsKey('singleCell') && params.singleCell) {
             singleCellInput = splitcodeTask.out.combine(indexFiles)
                 .map { cDNA, umi, barcode, genomeName, idx, t2g ->
                     tuple(cDNA, umi, barcode, idx, t2g, genomeName)
@@ -872,7 +872,7 @@ workflow kallistoWorkflow {
             terminalKallisto = kallistoTask(kallistoInput)
         }
     } else {
-        if (params.singleCell) {
+        if (params.containsKey('singleCell') && params.singleCell) {
             singleCellInput = splitcodeTask.out.map { cDNA, umi, barcode ->
                 tuple(cDNA, umi, barcode, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
             }
