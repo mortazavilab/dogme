@@ -642,6 +642,21 @@ def generate_dogme_output(abundance, transcript_info, novel_models, gene_id_to_n
             f.write("\t".join(row_data) + "\n")
             written_transcripts.add(transcript_id)
 
+def filter_novel_models_for_export(novel_models, abundance_counter, include_antisense):
+    if include_antisense:
+        return novel_models
+
+    antisense_transcript_ids = {
+        transcript_id
+        for _, transcript_id, classification in abundance_counter
+        if classification == "Antisense"
+    }
+    return {
+        locus: model
+        for locus, model in novel_models.items()
+        if model['id'] not in antisense_transcript_ids
+    }
+
 def write_statistics_to_csv(stats_data, filename):
     """Writes the final summary statistics to a CSV file."""
     log_message(f"Writing final statistics to: {filename}")
@@ -1045,33 +1060,26 @@ def main():
         for k in keys_to_remove:
             del abundance_for_dogme[k]
 
-    # Also, avoid exporting antisense novel models into the DOGME abundance/gtf when antisense is disabled.
-    # Filter novel_models to exclude antisense models unless args.antisense is True.
-    novel_models_for_export = {}
-    if args.antisense:
-        novel_models_for_export = novel_models
-    else:
-        for k, model in novel_models.items():
-            if model.get('strand') == '+' or model.get('strand') == '-':
-                # keep model only if it's not classified as Antisense in abundance (we already removed Antisense from abundance)
-                # Since novel_models don't themselves carry classification, we will include models whose gene_id is not an Antisense gene
-                # Build a lookup: if any abundance entry references this transcript id with Antisense, skip it
-                tx_id = model.get('id')
-                is_antisense_tx = any((g, t, c) for (g, t, c) in abundance_counter.keys() if t == tx_id and c == 'Antisense')
-                if not is_antisense_tx:
-                    novel_models_for_export[k] = model
+    log_message("Preparing novel models for DOGME export.")
+    novel_models_for_export = filter_novel_models_for_export(
+        novel_models, abundance_counter, args.antisense
+    )
+    log_message(f"Prepared {len(novel_models_for_export):,} novel models for DOGME export.")
 
     generate_dogme_output(abundance_for_dogme, transcript_info, novel_models_for_export, gene_id_to_name, output_prefix, sample_name)
     dogme_gtf_file = f"{output_prefix}_dogme.gtf"
-    log_message(f"Generating DOGME GTF file: {dogme_gtf_file}")
+    log_message(f"Generating DOGME GTF file: {dogme_gtf_file} ({len(novel_models_for_export):,} novel models)")
     with open(dogme_gtf_file, 'w') as f_out:
         with open(args.gtf, 'r') as f_in:
             f_out.write(f_in.read())
-        for model in novel_models_for_export.values():
+        log_message("Reference annotation copied to DOGME GTF; writing novel models.")
+        for model_number, model in enumerate(novel_models_for_export.values(), 1):
             attributes = f'gene_id "{model["gene_id"]}"; transcript_id "{model["id"]}";'
             f_out.write(f"\n{model['chrom']}\tDOGME\ttranscript\t{model['exons'][0][0]}\t{model['exons'][-1][1]}\t.\t{model['strand']}\t.\t{attributes}")
             for i, exon in enumerate(model['exons'], 1):
                 f_out.write(f"\n{model['chrom']}\tDOGME\texon\t{exon[0]}\t{exon[1]}\t.\t{model['strand']}\t.\t{attributes} exon_number \"{i}\";")
+            if model_number % 10000 == 0:
+                log_message(f"DOGME GTF: wrote {model_number:,}/{len(novel_models_for_export):,} novel models.")
 
     # --- Final Statistics Reporting ---
     log_message("--- Final Statistics ---")
