@@ -430,16 +430,21 @@ process demuxGenerateSeqspecTask {
     publishDir params.fastqDir, mode: 'copy'
     script:
     def outputSpec = "${sampleName}.seqspec.yaml"
+    def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
+    def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
+    def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
+    def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
+    def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
     """
     . ${params.scriptEnv}
     python ${projectDir}/scripts/generate_seqspec.py \
         --template-dir ${projectDir}/templates/seqspec \
         --read-type ${params.readType} \
-        ${(params.containsKey('singleCell') && params.singleCell) ? '--single-cell' : ''} \
-        ${(params.containsKey('singleCellKit') && params.singleCellKit) ? "--single-cell-kit ${params.singleCellKit}" : ''} \
-        {(params.containsKey('seqspecMd5') && params.seqspecMd5) ? '' : '--no-md5'} \
-        ${(params.containsKey('seqspecTemplate') && params.seqspecTemplate) ? "--template ${params.seqspecTemplate}" : ''} \
-        ${(params.containsKey('seqspecVariables') && params.seqspecVariables) ? "--variables ${params.seqspecVariables}" : ''} \
+        ${singleCellEnabled ? '--single-cell' : ''} \
+        ${singleCellKitArg} \
+        ${seqspecMd5Enabled ? '' : '--no-md5'} \
+        ${seqspecTemplateArg} \
+        ${seqspecVariablesArg} \
         --fastq ${inputFastq} \
         --output ${outputSpec}
     """
@@ -455,16 +460,21 @@ process generateSeqspecTask {
     publishDir params.fastqDir, mode: 'copy'
     script:
     def outputSpec = "${params.sample}.seqspec.yaml"
+    def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
+    def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
+    def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
+    def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
+    def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
     """
     . ${params.scriptEnv}
     python ${projectDir}/scripts/generate_seqspec.py \
         --template-dir ${projectDir}/templates/seqspec \
         --read-type ${params.readType} \
-        ${(params.containsKey('singleCell') && params.singleCell) ? '--single-cell' : ''} \
-        ${(params.containsKey('singleCellKit') && params.singleCellKit) ? "--single-cell-kit ${params.singleCellKit}" : ''} \
-        {(params.containsKey('seqspecMd5') && params.seqspecMd5) ? '' : '--no-md5'} \
-        ${(params.containsKey('seqspecTemplate') && params.seqspecTemplate) ? "--template ${params.seqspecTemplate}" : ''} \
-        ${(params.containsKey('seqspecVariables') && params.seqspecVariables) ? "--variables ${params.seqspecVariables}" : ''} \
+        ${singleCellEnabled ? '--single-cell' : ''} \
+        ${singleCellKitArg} \
+        ${seqspecMd5Enabled ? '' : '--no-md5'} \
+        ${seqspecTemplateArg} \
+        ${seqspecVariablesArg} \
         --fastq ${inputFastq} \
         --output ${outputSpec}
     """
@@ -660,6 +670,7 @@ process generateReport {
     publishDir params.topDir, mode: 'copy'
 
 input:
+    val reportInputDir
     val completion
     output:
     path "inventory_report.tsv", emit: inventory_report
@@ -668,7 +679,7 @@ input:
     script:
     """
     python ${projectDir}/scripts/generate_report.py \\
-        --input_dir ${report_inputs} \\
+        --input_dir ${reportInputDir} \
         --output_inventory inventory_report.tsv \\
         --output_qc qc_summary.csv \\
         --sample ${params.sample}
@@ -845,11 +856,12 @@ workflow kallistoWorkflow {
     unmapped_bams_ch
 
     main:
+    def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
     fastqFile = extractfastqTask(unmapped_bams_ch)
 
     seqspecFile = generateSeqspecTask(fastqFile)
 
-    if (params.readType == 'CDNA' && params.containsKey('singleCell') && params.singleCell) {
+    if (params.readType == 'CDNA' && singleCellEnabled) {
         splitcodeInput = fastqFile.combine(seqspecFile)
             .map { fastq, spec -> tuple(spec, fastq) }
         splitcodeTask(splitcodeInput)
@@ -860,7 +872,7 @@ workflow kallistoWorkflow {
             .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
         refFiles = makeKallistoRefsTask(kallisto_refs_ch)
         indexFiles = kallistoIndexTask(refFiles)
-        if (params.containsKey('singleCell') && params.singleCell) {
+        if (singleCellEnabled) {
             singleCellInput = splitcodeTask.out.combine(indexFiles)
                 .map { cDNA, umi, barcode, genomeName, idx, t2g ->
                     tuple(cDNA, umi, barcode, idx, t2g, genomeName)
@@ -872,7 +884,7 @@ workflow kallistoWorkflow {
             terminalKallisto = kallistoTask(kallistoInput)
         }
     } else {
-        if (params.containsKey('singleCell') && params.singleCell) {
+        if (singleCellEnabled) {
             singleCellInput = splitcodeTask.out.map { cDNA, umi, barcode ->
                 tuple(cDNA, umi, barcode, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
             }
@@ -1039,7 +1051,7 @@ workflow mainWorkflow {
         analysisCompletions = analysisCompletions.mix(annotations.completion)
     }
 
-    generateReport(analysisCompletions.collect())
+    generateReport(params.topDir, analysisCompletions.collect())
 }
 
 workflow basecallWorkflow {
@@ -1098,7 +1110,7 @@ workflow remapWorkflow {
         analysisCompletions = analysisCompletions.mix(annotations.completion)
     }
 
-    generateReport(analysisCompletions.collect())
+    generateReport(params.topDir, analysisCompletions.collect())
 }
 
 workflow fastqCDNAWorkflow {
@@ -1136,7 +1148,7 @@ workflow fastqCDNAWorkflow {
     def mappedBams = minimapTask.out.mapped_bams
 
     annotations = annotateRNAWorkflow(mappedBams)
-    generateReport(kallistoResults.completion.mix(annotations.completion).collect())
+    generateReport(params.topDir, kallistoResults.completion.mix(annotations.completion).collect())
 }
 
 workflow reportsWorkflow {
@@ -1147,7 +1159,7 @@ workflow reportsWorkflow {
     main:
     softwareVTask(theVersion, modelDirectory)
     
-    generateReport(nextflow.Channel.of(true))
+    generateReport(params.topDir, nextflow.Channel.of(true))
 }
 
 workflow annotateRNAWorkflow {
