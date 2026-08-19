@@ -42,6 +42,13 @@ def test_select_builtin_bulk_template(read_type, single_cell, expected):
     assert select_template(read_type, single_cell, ROOT / "templates" / "seqspec").name == expected
 
 
+@pytest.mark.parametrize("template_name", ["ont-bulk-cdna.yaml.j2", "ont-bulk-drna.yaml.j2", "ont-bulk-gdna.yaml.j2"])
+def test_builtin_bulk_templates_include_lib_struct(template_name):
+    template = (ROOT / "templates" / "seqspec" / template_name).read_text()
+
+    assert 'lib_struct: ""' in template
+
+
 def test_select_builtin_single_cell_template():
     assert select_template("CDNA", True, ROOT / "templates" / "seqspec").name == "parse-evercode-wt-mega-v2-nanopore.yaml.j2"
 

@@ -19,6 +19,8 @@ All notable DOGME changes are documented here.
 - Preserve the configured output directory as the inventory-report input while using completion channels solely for report ordering.
 - Suppress undefined-parameter warnings when optional single-cell and SeqSpec configuration values are omitted.
 - Render optional SeqSpec command-line arguments before task execution, avoiding invalid literal Groovy expressions in task scripts.
+- Add the required `lib_struct` field to bulk cDNA and gDNA SeqSpec templates for SeqSpec 0.3 validation.
+- Preserve barcode IDs in annotated BAM, GTF, abundance, QC, and log filenames.
 - Preserved barcode identifiers through demultiplexed BAM, FASTQ, SeqSpec, Kallisto, mapping, annotation, and modification outputs.
 - Generate a per-barcode FASTQ and SeqSpec artifact for demultiplexed RNA and cDNA reads.
 - Allow barcode modification branches with empty mapped strands or no detected modification calls to complete without failing.

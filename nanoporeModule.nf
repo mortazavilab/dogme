@@ -734,6 +734,7 @@ process annotateRNATask {
     path "*.log"
     publishDir params.annotDir, mode: 'copy'
     script:
+    def outputPrefix = bam.baseName
     """
     . ${params.scriptEnv}
     # If pipeline is running with CDNA read type, pass -CDNA to annotateRNA
@@ -746,9 +747,9 @@ process annotateRNATask {
     python ${projectDir}/scripts/annotateRNA.py \
         --bam ${bam} \
         --gtf ${gtf} \
-        --out ${bam.simpleName}.${genomeName} \
+        --out ${outputPrefix} \
         --threads ${task.cpus} \$cdna_opt \
-        --novel_prefix "${bam.simpleName}_${genomeName}" 2> ${bam.simpleName}.${genomeName}.log
+        --novel_prefix "${outputPrefix}" 2> ${outputPrefix}.log
     """
 }
 
