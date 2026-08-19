@@ -486,20 +486,24 @@ process splitcodeTask {
     input:
     tuple path(seqspecFile), path(inputFastq)
     output:
-    tuple path("${params.sample}_cDNA.fastq.gz"), path("${params.sample}_umi.fastq.gz"), path("${params.sample}_barcode.fastq.gz")
+    tuple path("${params.sample}_cDNA.fastq.gz"), path("${params.sample}_umi.fastq.gz"), path("${params.sample}_barcode.fastq.gz"), emit: fastqs
+    path "${params.sample}_splitcode_qc.tsv", emit: qc
+    path "${params.sample}_splitcode.log", emit: splitcode_log
     publishDir "${params.fastqDir}/single-cell", mode: 'copy'
     script:
     def outputFastq = "${params.sample}.splitcode.fastq.gz"
     """
     . ${params.scriptEnv}
+    set -o pipefail
     cp ${projectDir}/templates/splitcode/r1_R.txt .
     cp ${projectDir}/templates/splitcode/r1_T.txt .
     cp ${projectDir}/templates/splitcode/r2_3.txt .
     seqspec index -m rna -s file -t splitcode ${seqspecFile} > ONT.config
     sed -i 's/3:3:3/1:1:1/g' ONT.config
-    splitcode -c ONT.config -t 2 ${inputFastq} -o ${outputFastq}
+    splitcode -c ONT.config -t 2 ${inputFastq} -o ${outputFastq} 2>&1 | tee "${params.sample}_splitcode.log"
     python ${projectDir}/scripts/process_splitcode_fastqs.py \
-        --sample "${params.sample}"
+        --sample "${params.sample}" \
+        --qc-output "${params.sample}_splitcode_qc.tsv"
     gunzip -c "${params.sample}_cDNA.fastq.gz" > _cDNA.fastq
     gunzip -c "${params.sample}_umi.fastq.gz" > _umi.fastq
     gunzip -c "${params.sample}_barcode.fastq.gz" > _barcode.fastq
@@ -874,7 +878,7 @@ workflow kallistoWorkflow {
         refFiles = makeKallistoRefsTask(kallisto_refs_ch)
         indexFiles = kallistoIndexTask(refFiles)
         if (singleCellEnabled) {
-            singleCellInput = splitcodeTask.out.combine(indexFiles)
+            singleCellInput = splitcodeTask.out.fastqs.combine(indexFiles)
                 .map { cDNA, umi, barcode, genomeName, idx, t2g ->
                     tuple(cDNA, umi, barcode, idx, t2g, genomeName)
                 }
@@ -886,7 +890,7 @@ workflow kallistoWorkflow {
         }
     } else {
         if (singleCellEnabled) {
-            singleCellInput = splitcodeTask.out.map { cDNA, umi, barcode ->
+            singleCellInput = splitcodeTask.out.fastqs.map { cDNA, umi, barcode ->
                 tuple(cDNA, umi, barcode, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
             }
             terminalKallisto = singleCellKallistoTask(singleCellInput)

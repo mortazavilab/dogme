@@ -14,6 +14,9 @@ All notable DOGME changes are documented here.
 
 ### Fixed
 
+- Correct Parse Evercode WT Mega v2 Nanopore single-cell extraction geometry: recover the 10-base UMI and ordered 24-base barcode from the TruSeq-R2 reverse-complement side, trim poly(T)/TSO technical sequence, and emit normalized cDNA for forward and reverse-complement reads.
+- Make splitcode FASTQ combining skip absent orientation streams, exclude ambiguous read IDs before writing, preserve barcode quality orientation, and publish `${sample}_splitcode_qc.tsv` with input, empty, ambiguous, missing-orientation, and emitted-triplet counts.
+- Preserve splitcode's configured one-mismatch linker tolerance (`1:1:1`) instead of applying an exact-anchor filter to unclassified reads.
 - Demultiplex inline-classified Dorado basecalls with `--no-classify`, preserving classifications after barcode trimming instead of attempting a second classification pass.
 - Run QC and inventory reporting only after mapping, quantification, annotation, and modification branches have completed.
 - Preserve the configured output directory as the inventory-report input while using completion channels solely for report ordering.
@@ -27,6 +30,7 @@ All notable DOGME changes are documented here.
 
 ### Documentation
 
+- Documented the Parse WT Mega v2 100,000-read empirical regression expectations: 17,308 forward reads, 21,022 reverse-complement reads, 115 ambiguous reads excluded, corrected UMI homopolymer rates near zero, and corrected cDNA-region medians of 463-464 bases.
 - Documented the opt-in demultiplexing configuration, output locations, barcode naming, and current single-cell/reporting limitations.
 
 ## [1.4.0] - 2026-08-13
