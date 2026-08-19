@@ -171,9 +171,15 @@ def test_rendered_template_has_empirical_anchor_order_and_one_mismatch_rules():
     ]
     positions = [rendered.index(anchor) for anchor in anchors]
     assert positions == sorted(positions)
+    assert "primer_id: truseq_read2" in rendered
     assert "distances" not in rendered
     splitcode_config = (ROOT / "templates" / "splitcode" / "config-correct.txt").read_text()
     assert "distances" in splitcode_config
     nextflow = (ROOT / "nanoporeModule.nf").read_text()
     assert "seqspec index -m rna -s file -t splitcode" in nextflow
     assert "sed -i 's/3:3:3/1:1:1/g' ONT.config" in nextflow
+    assert "path templates" in nextflow
+    assert "path scripts" in nextflow
+    assert "--template-dir ${templates}/seqspec" in nextflow
+    assert 'file("${projectDir}/templates")' in nextflow
+    assert 'file("${projectDir}/scripts")' in nextflow

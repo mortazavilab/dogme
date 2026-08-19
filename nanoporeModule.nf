@@ -425,6 +425,8 @@ process demuxGenerateSeqspecTask {
     container 'ghcr.io/mortazavilab/dogme-pipeline:latest'
     input:
     tuple path(inputFastq), val(sampleName)
+    path templates
+    path scripts
     output:
     tuple path("${sampleName}.seqspec.yaml"), val(sampleName)
     publishDir params.fastqDir, mode: 'copy'
@@ -437,8 +439,8 @@ process demuxGenerateSeqspecTask {
     def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
     """
     . ${params.scriptEnv}
-    python ${projectDir}/scripts/generate_seqspec.py \
-        --template-dir ${projectDir}/templates/seqspec \
+    python ${scripts}/generate_seqspec.py \
+        --template-dir ${templates}/seqspec \
         --read-type ${params.readType} \
         ${singleCellEnabled ? '--single-cell' : ''} \
         ${singleCellKitArg} \
@@ -455,6 +457,8 @@ process generateSeqspecTask {
     container 'ghcr.io/mortazavilab/dogme-pipeline:latest'
     input:
     path inputFastq
+    path templates
+    path scripts
     output:
     path "*.seqspec.yaml"
     publishDir params.fastqDir, mode: 'copy'
@@ -467,8 +471,8 @@ process generateSeqspecTask {
     def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
     """
     . ${params.scriptEnv}
-    python ${projectDir}/scripts/generate_seqspec.py \
-        --template-dir ${projectDir}/templates/seqspec \
+    python ${scripts}/generate_seqspec.py \
+        --template-dir ${templates}/seqspec \
         --read-type ${params.readType} \
         ${singleCellEnabled ? '--single-cell' : ''} \
         ${singleCellKitArg} \
@@ -864,7 +868,11 @@ workflow kallistoWorkflow {
     def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
     fastqFile = extractfastqTask(unmapped_bams_ch)
 
-    seqspecFile = generateSeqspecTask(fastqFile)
+    seqspecFile = generateSeqspecTask(
+        fastqFile,
+        file("${projectDir}/templates"),
+        file("${projectDir}/scripts"),
+    )
 
     if (params.readType == 'CDNA' && singleCellEnabled) {
         splitcodeInput = fastqFile.combine(seqspecFile)
@@ -1012,7 +1020,11 @@ workflow mainWorkflow {
             }
         if (params.readType == 'RNA' || params.readType == 'CDNA') {
             demuxFastq = demuxExtractfastqTask(classifiedUnmapped)
-            demuxSeqspec = demuxGenerateSeqspecTask(demuxFastq)
+            demuxSeqspec = demuxGenerateSeqspecTask(
+                demuxFastq,
+                file("${projectDir}/templates"),
+                file("${projectDir}/scripts"),
+            )
             demuxKallisto = demuxKallistoWorkflow(demuxFastq)
             analysisCompletions = analysisCompletions.mix(demuxSeqspec.collect())
             analysisCompletions = analysisCompletions.mix(demuxKallisto.completion)
