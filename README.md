@@ -4,7 +4,11 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## What's New in Dogme 1.3.X
+## What's New in Dogme 1.4.0
+
+- **End-to-end single-cell cDNA workflow:** With `readType = 'CDNA'` and `singleCell = true`, DOGME generates and validates seqspec metadata, splits and corrects cDNA/UMI/barcode FASTQs with splitcode, and runs single-cell kallisto/bustools quantification.
+- **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. Single-cell cDNA runs additionally generate a splitcode configuration and processed FASTQ.
+- **Optional Dorado demultiplexing:** Set `kitName` to classify and demultiplex barcoded reads. Classified reads use `${sample}.${barcode}` output names and run through barcode-aware mapping, bulk kallisto, annotation, and RNA/DNA modification processing; unclassified reads are published without downstream analysis.
 
 - **fastq CDNA support**: 
   New workflow and entry point to start from an existing CDNA FASTQ, create an unmapped BAM, run minimap2 and kallisto in parallel, then annotate the mapped BAMs.
@@ -14,6 +18,8 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   New workflow entry point to annotate mapped BAMs with transcript information using `annotateRNA.py`. This produces annotated BAM files, TALON outputs and QC summary CSVs for each genome.
 - **Standalone kallisto entry point:**  
   Added a `kallisto` entry point that starts from unmapped BAMs, extracts FASTQ, and runs the kallisto long-read quantification steps without re-running basecalling or remapping.
+- **Single-cell kallisto/bustools quantification:**
+  Added a `kb count`-equivalent workflow using kallisto and bustools alone, with long-read mode, technology string `2,0,24:1,0,10:0,0,0`, barcode whitelist correction, and support for precomputed or auto-built `k=63` indexes.
 - **Automatic GTF-to-Junction BED Conversion:**  
   The pipeline now automatically converts GTF files to junction BED files for minimap2 spliced alignment, ensuring correct handling of RNA and cDNA mapping.
 - **Increased Maximum Intron Size:**  
@@ -30,7 +36,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   - Processes include retry/error strategies for robustness of long-running tasks.
 
 
-Dogme 1.3.1 also carries forward the 1.2.2 updates to `annotateRNA.py`, `reconcileBams.py`, and the expanded BAM/FASTQ reporting in the final QC summary.
+Dogme 1.4.0 carries forward the 1.3.3 workflow updates, including seqspec generation, single-cell cDNA splitting, and single-cell kallisto/bustools quantification.
 
 ---
 
@@ -105,6 +111,16 @@ params {
     // change if the launch directory is not where the pod5 and output directories should go
     topDir = "${launchDir}"
 
+    // Optional seqspec generation for FASTQs created by DOGME.
+    singleCell = false
+    singleCellKit = null
+    seqspecTemplate = null
+    seqspecVariables = null
+    // Optional Dorado barcode kit identifier. Leave null to disable demultiplexing.
+    kitName = null
+    // Optional number of highest-read-count classified barcodes to retain. Leave null to retain all.
+    keepBarcodes = null
+
     // the following file should be edited to add all the necessary paths for commands such as
     // dorado, samtools, minimap2, kallisto, and bustools
     scriptEnv = "${launchDir}/dogme.profile"
@@ -131,6 +147,17 @@ params {
 ```
   
 Be sure to change the process section of the example config file to reflect your cluster environment. 
+
+### Optional Dorado demultiplexing
+
+Set `kitName` to the Dorado kit identifier to enable barcode classification and demultiplexing during the `main` or `basecall` workflow:
+
+```
+kitName = 'SQK-RNA004'
+keepBarcodes = 8
+```
+
+Leave `kitName` unset, `null`, or blank to preserve the normal single-sample basecalling behavior. When enabled, Dorado publishes barcode BAMs below `${dorDir}/demux` and classified BAMs below `${bamDir}` using the `${sample}.bcNN` prefix. DOGME also publishes `${sample}.demux_summary.tsv` in `${topDir}` with the read count and percentage for every Dorado category, including unclassified reads, plus each barcode's downstream-retention status. Set `keepBarcodes` to a positive integer to retain only the highest-read-count classified barcodes before downstream analysis; leave it `null` to retain all classified barcodes. Classified RNA and cDNA reads are mapped, extracted to barcode-specific FASTQs, quantified with bulk kallisto, and annotated. Classified RNA and DNA reads also run through barcode-specific modkit pileup and BED filtering. Unclassified and no-barcode BAMs are published but are not analyzed. Single-cell cDNA routing and run-level aggregate reports are not yet enabled for demultiplexed runs. The exact kit identifier must be supported by the Dorado version installed in the execution container or profile.
 
 ---
 
@@ -170,6 +197,70 @@ By default, the pipeline will create several folders within the launch directory
 - **modkit**: Run modification extraction and filtering.
 - **reports**: Generate summary reports only.
 - **annotateRNA**: Annotate mapped BAMs with transcript information and produce QC summaries.
+
+## Seqspec generation for generated FASTQs
+
+When DOGME creates a FASTQ from an unmapped BAM, it automatically creates a seqspec artifact beside the FASTQ. Region structure is declared by a built-in assay template; read lengths and file metadata are measured from the generated FASTQ. An unmapped BAM carries no assay geometry, so the artifact does not infer region structure from the BAM.
+
+Single-cell read processing is enabled for `readType = 'CDNA'` with `singleCell = true`. After seqspec generation, DOGME creates `ONT.config`, normalizes splitcode's `3:3:3` geometry to `1:1:1`, and runs `splitcode` with two threads. The original FASTQ remains available, and the combined `${sample}_barcode.fastq.gz`, `${sample}_cDNA.fastq.gz`, and `${sample}_umi.fastq.gz` files are published under `${fastqDir}/single-cell`.
+
+The Parse Evercode WT Mega v2 template follows the observed Nanopore structure: TruSeq Read 2 reverse complement, UMI, barcode 1, linker 1, barcode 2, linker 2, barcode 3, poly(T), biological cDNA, and TSO reverse complement. Splitcode keeps its documented one-mismatch linker tolerance by normalizing the generated `3:3:3` distances to `1:1:1`; exact-anchor failure is not used as a read-length or read-retention filter. The task combines complete `f`, `c`, `r`, and `rc` streams when they exist, normalizes barcode sequence and quality together, and writes one synchronized triplet per accepted read. A read ID observed in more than one orientation is treated as ambiguous and excluded before output, so it cannot be duplicated. Missing orientation streams are skipped rather than represented by empty placeholder records. `${sample}_splitcode_qc.tsv` reports present/missing orientations, input triplets, empty records excluded, ambiguous IDs excluded, and emitted triplets; `${sample}_splitcode.log` preserves splitcode's own mismatch-rescue summary for auditing. The cDNA correction pass extracts recognized on-list barcode segments, and that sample-scoped extracted FASTQ is passed to `mergeRT` before publication. It publishes three final FASTQs: `${sample}_barcode.fastq.gz`, `${sample}_cDNA.fastq.gz`, and `${sample}_umi.fastq.gz`. With `singleCell = true`, the kallisto workflow consumes these files directly and expands the equivalent of `kb count` into kallisto and bustools commands using technology string `2,0,24:1,0,10:0,0,0`, `--long`, and `--threshold 0.8`. Barcode correction and `CB`/`CR`/`UB`/`UR` tagging are not performed by this splitcode task; bustools whitelist correction is performed by the single-cell quantification task.
+
+### Parse WT Mega v2 validation baseline
+
+A 100,000-raw-read validation produced 17,308 forward reads, 21,022 reverse-complement reads, 115 ambiguous-orientation reads, and 61,555 reads not classified by exact linker matching. The ambiguous reads are excluded deterministically and counted in `${sample}_splitcode_qc.tsv`; they are never duplicated. The 61,555 exact-unclassified reads are not discarded by DOGME's extraction logic: splitcode is still run with its configured one-mismatch linker tolerance, and rescue totals should be taken from the published `${sample}_splitcode.log` in the DOGME image.
+
+The corrected candidate expectations are:
+
+| Orientation | Valid 10-base UMIs | Homopolymer UMI rate | cDNA-region median |
+| --- | ---: | ---: | ---: |
+| `f` | 17,302 / 17,308 | 0.01% | 463 bases |
+| `rc` | 21,008 / 21,022 | 0% | 464 bases |
+
+The regression suite records these values and tests exact UMI/barcode/cDNA recovery, orientation normalization, quality preservation, empty-record rejection, duplicate prevention, ambiguous-read exclusion, and absent-orientation handling. `c` and `r` remain supported by the generic orientation transforms and synthetic tests; they are not required to be present in every sample.
+
+The built-in template is selected from the run configuration:
+
+| `readType` | `singleCell` | Template |
+| --- | --- | --- |
+| `RNA` | `false` | `templates/seqspec/ont-bulk-drna.yaml.j2` |
+| `CDNA` | `false` | `templates/seqspec/ont-bulk-cdna.yaml.j2` |
+| `DNA` | `false` | `templates/seqspec/ont-bulk-gdna.yaml.j2` |
+| `CDNA` | `true` | `templates/parse-evercode-wt-mega-v2-nanopore.yaml.j2` |
+
+The normal case requires no seqspec-specific parameters. An unsupported
+`readType`/`singleCell` combination fails clearly rather than using the wrong
+assay geometry. `params.seqspecTemplate` remains an explicit override, and
+`params.seqspecVariables` is an optional JSON object merged over values derived
+from the run.
+
+The derived values include the generated FASTQ filename, file ID, byte size,
+local URL, MD5 checksum (unless `params.seqspecMd5 = false`), observed minimum
+and maximum read lengths, and run date. User-provided variables take precedence
+over those derived values.
+
+Explicit override configuration remains available:
+
+```groovy
+params {
+  singleCell = false
+  singleCellKit = null
+  seqspecTemplate = '/path/to/assay-seqspec.yaml.j2'
+  seqspecVariables = '/path/to/assay-seqspec-variables.json'
+}
+```
+
+For built-in Parse single-cell specs, `singleCellKit` defaults to `parse-wt-mega-v2`. Set it to either `parse-wt-v2` or `parse-wt-mega-v2` to populate the bundled barcode onlist URLs, checksums, assay metadata, and ONT sequencing metadata. User-provided `seqspecVariables` take precedence over those defaults. The remote onlist file sizes are unavailable in the bundled metadata and are rendered as `null` unless supplied in `seqspecVariables`.
+
+The repository includes the Parse Evercode WT mega v2 nanopore template at
+`templates/parse-evercode-wt-mega-v2-nanopore.yaml.j2`. It is selected for
+`readType = 'CDNA'` with `singleCell = true`. Its 0.4.0 schema has not yet been
+validated inside the DOGME image; run `seqspec check` after rendering before
+using it for production data.
+
+The renderer and splitcode task run inside `ghcr.io/mortazavilab/dogme-pipeline:latest` by default. The image must provide both `seqspec` and `splitcode` on `PATH`. DOGME fills template placeholders without Jinja2. Enable Docker or Singularity/Apptainer in the Nextflow configuration; without a container runtime, the tasks cannot access these image-provided dependencies. Seqspec artifacts are published beside the generated FASTQ under `${fastqDir}`, while splitcode outputs are published under `${fastqDir}/single-cell`.
+
+`singleCell` defaults to `false`, and splitcode runs only for `readType = 'CDNA'` with `singleCell = true`. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
 
 ---
 

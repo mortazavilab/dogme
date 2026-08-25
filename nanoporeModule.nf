@@ -55,10 +55,11 @@ process doradoTask {
     path "${inputFile.simpleName}.bam"
     publishDir params.dorDir, mode: 'copy'
     script:
+    def kitNameArg = params.kitName ? "--kit-name ${params.kitName}" : ''
     """
     . ${params.scriptEnv}
     mkdir -p ${params.dorDir}
-    dorado basecaller ${doradoModel} --models-directory ${modDirGood}  --estimate-poly-a --batchsize 32 $inputFile > "${inputFile.simpleName}.bam"
+    dorado basecaller ${doradoModel} --models-directory ${modDirGood} ${kitNameArg} --estimate-poly-a --batchsize 32 $inputFile > "${inputFile.simpleName}.bam"
     """
 }
 
@@ -72,6 +73,123 @@ process mergeBamsTask {
     """
     . ${params.scriptEnv}
     samtools merge --threads ${task.cpus} -o ${params.sample}.unmapped.bam ${params.dorDir}/*.bam
+    """
+}
+
+process doradoDemuxTask {
+    tag "${params.sample} demultiplex"
+    input:
+    path inputBam
+    output:
+    path "demux/**/*.bam", emit: demuxed_bams
+    publishDir "${params.dorDir}/demux", mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    mkdir -p demux
+    dorado demux --no-classify --output-dir demux ${inputBam}
+    """
+}
+
+process demuxSummaryTask {
+    tag "${params.sample} demux summary"
+    input:
+    path inputBams
+    output:
+    path "${params.sample}.demux_summary.tsv"
+    publishDir params.topDir, mode: 'copy'
+    script:
+    def keepCount = params.keepBarcodes ?: 0
+    """
+    . ${params.scriptEnv}
+    : > raw_counts.tsv
+    while IFS= read -r -d '' inputBam; do
+        inputName="\${inputBam##*/}"
+        inputName="\$(printf '%s' "\${inputName}" | tr '[:upper:]' '[:lower:]')"
+        if [[ "\${inputName}" =~ barcode([0-9]+) ]]; then
+            category="bc\${BASH_REMATCH[1]}"
+        elif [[ "\${inputName}" == *unclassified* ]]; then
+            category="unclassified"
+        elif [[ "\${inputName}" == *no_barcode* || "\${inputName}" == *nobarcode* ]]; then
+            category="no_barcode"
+        else
+            category="other"
+        fi
+        printf '%s\\t%s\\n' "\${category}" "\$(samtools view -c "\${inputBam}")" >> raw_counts.tsv
+    done < <(find -L . -type f -name '*.bam' -print0)
+
+    awk -F '\\t' '{ counts[\$1] += \$2 } END { for (category in counts) print category "\\t" counts[category] }' raw_counts.tsv \
+        | sort -k2,2nr -k1,1 > all_counts.tsv
+
+    awk '\$1 ~ /^bc[0-9]+\$/ { print }' all_counts.tsv \
+        | head -n ${keepCount} \
+        | cut -f1 > selected_barcodes.txt
+    if [[ ${keepCount} -eq 0 ]]; then
+        awk '\$1 ~ /^bc[0-9]+\$/ { print \$1 }' all_counts.tsv > selected_barcodes.txt
+    fi
+
+    totalReads="\$(awk -F '\\t' '{ total += \$2 } END { print total + 0 }' all_counts.tsv)"
+    awk -F '\\t' -v totalReads="\${totalReads}" '
+        FNR == NR { selected[\$1] = 1; next }
+        {
+            retained = selected[\$1] ? "yes" : "no"
+            percent = totalReads ? (100 * \$2 / totalReads) : 0
+            printf "%s\\t%s\\t%.2f\\t%s\\n", \$1, \$2, percent, retained
+        }
+    ' selected_barcodes.txt all_counts.tsv > summary_rows.tsv
+
+    {
+        printf 'category\\treads\\tpercent_of_demuxed_reads\\tretained_for_downstream\\n'
+        cat summary_rows.tsv
+    } > ${params.sample}.demux_summary.tsv
+    """
+}
+
+process selectTopDemuxBamsTask {
+    tag "top ${params.keepBarcodes} barcodes"
+    input:
+    path inputBams
+    output:
+    path "selected/*.bam", emit: selected_bams
+    script:
+    """
+    . ${params.scriptEnv}
+    : > read_counts.tsv
+    while IFS= read -r -d '' inputBam; do
+        if [[ "\${inputBam}" =~ barcode([0-9]+) ]]; then
+            barcode="\${BASH_REMATCH[1]}"
+            readCount="\$(samtools view -c "\${inputBam}")"
+            printf '%s\\t%s\\t%s\\n' "\${barcode}" "\${readCount}" "\${inputBam}" >> read_counts.tsv
+        fi
+    done < <(find -L . -type f -name '*.bam' -print0)
+
+    awk -F '\\t' '{ counts[\$1] += \$2 } END { for (barcode in counts) print barcode "\\t" counts[barcode] }' read_counts.tsv \
+        | sort -k2,2nr -k1,1n \
+        | head -n ${params.keepBarcodes} \
+        | cut -f1 > selected_barcodes.txt
+
+    mkdir selected
+    while IFS= read -r barcode; do
+        mapfile -t barcodeBams < <(awk -F '\\t' -v barcode="\${barcode}" '\$1 == barcode { print \$3 }' read_counts.tsv)
+        if [[ "\${#barcodeBams[@]}" -eq 1 ]]; then
+            cp "\${barcodeBams[0]}" "selected/bc\${barcode}.bam"
+        else
+            samtools merge --threads ${task.cpus} -o "selected/bc\${barcode}.bam" "\${barcodeBams[@]}"
+        fi
+    done < selected_barcodes.txt
+    """
+}
+
+process prepareDemuxBamTask {
+    tag "${params.sample}.${barcode}"
+    input:
+    tuple path(inputBam), val(barcode)
+    output:
+    path "${params.sample}.${barcode}.unmapped.bam", emit: classified_unmapped
+    publishDir params.bamDir, mode: 'copy'
+    script:
+    """
+    cp ${inputBam} ${params.sample}.${barcode}.unmapped.bam
     """
 }
 
@@ -119,6 +237,34 @@ process minimapTask {
     """
 }
 
+process demuxMinimapTask {
+    tag "${sampleName}.${genomeName}"
+    input:
+    tuple path(inputFile), val(sampleName), val(genomeRef), val(annotRef), val(genomeName)
+    output:
+    tuple path("${sampleName}.${genomeName}.bam"), path("${sampleName}.${genomeName}.bam.bai"), val(genomeName), val(sampleName), emit: mapped_bams
+    publishDir params.bamDir, mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    if [[ "${params.readType}" == "RNA" ]]; then
+        python ${projectDir}/scripts/gtf_to_junction_bed.py ${annotRef} > junc.bed
+        minimap2_opts="-ax splice -uf -G 500000 --junc-bed junc.bed"
+    elif [[ "${params.readType}" == "CDNA" ]]; then
+        python ${projectDir}/scripts/gtf_to_junction_bed.py ${annotRef} > junc.bed
+        minimap2_opts="-ax splice:hq -uf -G 500000 --junc-bed junc.bed"
+    else
+        minimap2_opts="-ax lr:hq"
+    fi
+    samtools fastq --threads 64 -T MM,ML,pt ${inputFile} > ${sampleName}.fastq
+    minimap2 -t 64 \$minimap2_opts -L --secondary=no --MD -y ${genomeRef} ${sampleName}.fastq > ${sampleName}.${genomeName}.sam
+    rm ${sampleName}.fastq
+    samtools sort ${sampleName}.${genomeName}.sam --threads 64 > ${sampleName}.${genomeName}.bam \
+    && samtools index -@ 64 ${sampleName}.${genomeName}.bam
+    rm ${sampleName}.${genomeName}.sam
+    """
+}
+
 process getChrListTask {
     tag "${genomeName}"
 
@@ -159,6 +305,21 @@ process separateStrandsTask {
     """
 }
 
+process demuxSeparateStrandsTask {
+    input:
+    tuple path(inputbam), val(genomeName), val(sampleName)
+    output:
+    tuple path("${sampleName}.${genomeName}.plus.bam"), path("${sampleName}.${genomeName}.plus.bam.bai"), val(genomeName), val(sampleName), emit: plus_strand
+    tuple path("${sampleName}.${genomeName}.minus.bam"), path("${sampleName}.${genomeName}.minus.bam.bai"), val(genomeName), val(sampleName), emit: minus_strand
+    publishDir params.bamDir, mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    samtools view -b -f 16 ${inputbam} -o ${sampleName}.${genomeName}.minus.bam && samtools index -@ 32 ${sampleName}.${genomeName}.minus.bam
+    samtools view -b -F 16 ${inputbam} -o ${sampleName}.${genomeName}.plus.bam && samtools index -@ 32 ${sampleName}.${genomeName}.plus.bam
+    """
+}
+
 process modkitTask {
     input:
     tuple path(inputFile), path(inputBai), val(genomeName)
@@ -185,6 +346,34 @@ process modkitTask {
     fi
     modkit pileup -t 12 ${filterThresholdArg} "${inputFile}" "\${bedFileOutput}"
     gzip "\${bedFileOutput}"
+    """
+}
+
+process demuxModkitTask {
+    input:
+    tuple path(inputFile), path(inputBai), val(genomeName), val(sampleName)
+    output:
+    path "*.bed.gz", optional: true
+    publishDir params.bedDir, mode: 'copy'
+    script:
+    def filterThresholdArg = ''
+    if (params.modkitFilterThreshold != null && params.modkitFilterThreshold != '') {
+        filterThresholdArg = "--filter-threshold ${params.modkitFilterThreshold}"
+    }
+    """
+    . ${params.scriptEnv}
+    bedFileOutput="${sampleName}.${genomeName}.bed"
+    if [[ "${params.readType}" == "RNA" ]]; then
+        if [[ "${inputFile}" == *".plus."* ]]; then
+            bedFileOutput="${sampleName}.${genomeName}.plus.bed"
+        elif [[ "${inputFile}" == *".minus."* ]]; then
+            bedFileOutput="${sampleName}.${genomeName}.minus.bed"
+        fi
+    fi
+    if [[ "\$(samtools view -c -F 4 ${inputFile})" -gt 0 ]]; then
+        modkit pileup -t 12 ${filterThresholdArg} "${inputFile}" "\${bedFileOutput}"
+        gzip "\${bedFileOutput}"
+    fi
     """
 }
 
@@ -216,6 +405,157 @@ process extractfastqTask {
     """
 }
 
+process demuxExtractfastqTask {
+    tag "${sampleName} FASTQ"
+    input:
+    tuple path(inputFile), val(sampleName)
+    output:
+    tuple path("${sampleName}.fastq.gz"), val(sampleName)
+    publishDir params.fastqDir, mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    samtools fastq --threads 6 ${inputFile} > ${sampleName}.fastq
+    gzip -v ${sampleName}.fastq
+    """
+}
+
+process demuxGenerateSeqspecTask {
+    tag "${sampleName} seqspec"
+    container 'ghcr.io/mortazavilab/dogme-pipeline:latest'
+    input:
+    tuple path(inputFastq), val(sampleName)
+    path templates
+    path scripts
+    output:
+    tuple path("${sampleName}.seqspec.yaml"), val(sampleName)
+    publishDir params.fastqDir, mode: 'copy'
+    script:
+    def outputSpec = "${sampleName}.seqspec.yaml"
+    def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
+    def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
+    def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
+    def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
+    def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
+    """
+    . ${params.scriptEnv}
+    python ${scripts}/generate_seqspec.py \
+        --template-dir ${templates}/seqspec \
+        --read-type ${params.readType} \
+        ${singleCellEnabled ? '--single-cell' : ''} \
+        ${singleCellKitArg} \
+        ${seqspecMd5Enabled ? '' : '--no-md5'} \
+        ${seqspecTemplateArg} \
+        ${seqspecVariablesArg} \
+        --fastq ${inputFastq} \
+        --output ${outputSpec}
+    """
+}
+
+process generateSeqspecTask {
+    tag "${params.sample} seqspec"
+    container 'ghcr.io/mortazavilab/dogme-pipeline:latest'
+    input:
+    path inputFastq
+    path templates
+    path scripts
+    output:
+    path "*.seqspec.yaml"
+    publishDir params.fastqDir, mode: 'copy'
+    script:
+    def outputSpec = "${params.sample}.seqspec.yaml"
+    def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
+    def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
+    def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
+    def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
+    def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
+    """
+    . ${params.scriptEnv}
+    python ${scripts}/generate_seqspec.py \
+        --template-dir ${templates}/seqspec \
+        --read-type ${params.readType} \
+        ${singleCellEnabled ? '--single-cell' : ''} \
+        ${singleCellKitArg} \
+        ${seqspecMd5Enabled ? '' : '--no-md5'} \
+        ${seqspecTemplateArg} \
+        ${seqspecVariablesArg} \
+        --fastq ${inputFastq} \
+        --output ${outputSpec}
+    """
+}
+
+process splitcodeTask {
+    tag "${params.sample} splitcode"
+    container 'ghcr.io/mortazavilab/dogme-pipeline:latest'
+    input:
+    tuple path(seqspecFile), path(inputFastq)
+    output:
+    tuple path("${params.sample}_cDNA.fastq.gz"), path("${params.sample}_umi.fastq.gz"), path("${params.sample}_barcode.fastq.gz"), emit: fastqs
+    path "${params.sample}_splitcode_qc.tsv", emit: qc
+    path "${params.sample}_splitcode.log", emit: splitcode_log
+    publishDir "${params.fastqDir}/single-cell", mode: 'copy'
+    script:
+    def outputFastq = "${params.sample}.splitcode.fastq.gz"
+    """
+    . ${params.scriptEnv}
+    set -o pipefail
+    cp ${projectDir}/templates/splitcode/r1_R.txt .
+    cp ${projectDir}/templates/splitcode/r1_T.txt .
+    cp ${projectDir}/templates/splitcode/r2_3.txt .
+    seqspec index -m rna -s file -t splitcode ${seqspecFile} > ONT.config
+    sed -i 's/3:3:3/1:1:1/g' ONT.config
+    splitcode -c ONT.config -t 2 ${inputFastq} -o ${outputFastq} 2>&1 | tee "${params.sample}_splitcode.log"
+    python ${projectDir}/scripts/process_splitcode_fastqs.py \
+        --sample "${params.sample}" \
+        --qc-output "${params.sample}_splitcode_qc.tsv"
+    gunzip -c "${params.sample}_cDNA.fastq.gz" > _cDNA.fastq
+    gunzip -c "${params.sample}_umi.fastq.gz" > _umi.fastq
+    gunzip -c "${params.sample}_barcode.fastq.gz" > _barcode.fastq
+    splitcode -c ${projectDir}/templates/splitcode/config-correct.txt \
+        --nFastqs=2 --gzip \
+        -o "${params.sample}_cDNA.fastq.gz,_barcode.from-cdna.fastq.gz" \
+        _cDNA.fastq _barcode.fastq -t 2
+    mv barcode.fastq.gz "${params.sample}_barcode.extracted.fastq.gz"
+    splitcode -c ${projectDir}/templates/splitcode/config-correct.txt \
+        --nFastqs=2 --gzip \
+        -o "${params.sample}_umi.fastq.gz,_barcode.from-umi.fastq.gz" \
+        _umi.fastq _barcode.fastq -t 2
+    rm -f barcode.fastq.gz
+    splitcode -c ${projectDir}/templates/splitcode/config.mergeRT \
+        -o "${params.sample}_barcode.fastq" "${params.sample}_barcode.extracted.fastq.gz" -t 2
+    gzip -f "${params.sample}_barcode.fastq"
+    rm -f "${params.sample}_barcode.extracted.fastq.gz" _barcode.from-cdna.fastq.gz \
+        _barcode.from-umi.fastq.gz
+    """
+}
+
+process singleCellKallistoTask {
+    tag "${genomeName} single-cell"
+    input:
+    tuple path(cDNAFile), path(umiFile), path(barcodeFile), path(indexFile), path(t2gFile), val(genomeName)
+    output:
+    path "${params.sample}_${genomeName}"
+    publishDir "${params.kallistoDir}/${genomeName}/single-cell", mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    output_dir="${params.sample}_${genomeName}"
+    mkdir -p "\${output_dir}"
+    kallisto bus --long --threshold 0.8 -x '2,0,24:1,0,10:0,0,0' \\
+        -i ${indexFile} -t ${task.cpus} -o "\${output_dir}" \\
+        "${cDNAFile}" "${umiFile}" "${barcodeFile}"
+    bustools whitelist -o "\${output_dir}/whitelist.txt" "\${output_dir}/output.bus"
+    bustools correct -w "\${output_dir}/whitelist.txt" \\
+        -o "\${output_dir}/corrected.bus" "\${output_dir}/output.bus"
+    bustools sort -t ${task.cpus} "\${output_dir}/corrected.bus" \\
+        -o "\${output_dir}/sorted.bus"
+    bustools count "\${output_dir}/sorted.bus" \\
+        -t "\${output_dir}/transcripts.txt" \\
+        -e "\${output_dir}/matrix.ec" \\
+        -o "\${output_dir}/count" --cm -m -g ${t2gFile}
+    """
+}
+
 process makeKallistoRefsTask {
     tag "${genomeName}"
     input:
@@ -240,8 +580,7 @@ process kallistoIndexTask {
     script:
     """
     . ${params.scriptEnv}
-    #kallisto index -t 8 -i ${genomeName}.idx -k 63 -d ${genomeFasta} ${cdnaFa} ${intronsFa}
-    kallisto index -t 8 -i ${genomeName}.idx -k 31 ${cdnaFa}
+    kallisto index -t 8 -i ${genomeName}.idx -k 63 ${cdnaFa}
     """
 }
 
@@ -263,6 +602,24 @@ process kallistoTask {
     """
 }
 
+process demuxKallistoTask {
+    tag "${sampleName}.${genomeName}"
+    input:
+    tuple path(inputFile), path(indexFile), path(t2gFile), val(genomeName), val(sampleName)
+    output:
+    path "${sampleName}_${genomeName}"
+    publishDir "${params.kallistoDir}/${genomeName}", mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    mkdir -p ${sampleName}_${genomeName}
+    kallisto bus --long --threshold 0.8 -x bulk -i ${indexFile} -t ${task.cpus} -o ${sampleName}_${genomeName} "${inputFile}"
+    bustools sort -t ${task.cpus} ${sampleName}_${genomeName}/output.bus -o ${sampleName}_${genomeName}/sorted.bus
+    bustools count ${sampleName}_${genomeName}/sorted.bus -t ${sampleName}_${genomeName}/transcripts.txt -e ${sampleName}_${genomeName}/matrix.ec -o ${sampleName}_${genomeName}/count --cm -m -g ${t2gFile}
+    kallisto quant-tcc -t ${task.cpus} --long -P ONT ${sampleName}_${genomeName}/count.mtx -i ${indexFile} -f ${sampleName}_${genomeName}/flens.txt -e ${sampleName}_${genomeName}/count.ec.txt -o ${sampleName}_${genomeName}
+    """
+}
+
 // The splitmodification task generates bed files for each DNA modification. 
 // Modifications are identified by letters: 5mCG (m), 6mA (a),and hydroxymethylation (h). 
 // The files generated by modkit are grepped for the letter codes. 
@@ -270,7 +627,7 @@ process splitModificationTask {
     input:
     path inputFile
     output:
-    path "*.filtered*.bed.gz"
+    path "*.filtered*.bed.gz", optional: true
     publishDir params.bedDir, mode: 'copy'
     script:
     """
@@ -321,9 +678,8 @@ process generateReport {
     publishDir params.topDir, mode: 'copy'
 
 input:
-    path report_inputs    // Required input
-    val results 
-    path openBeds 
+    val reportInputDir
+    val completion
     output:
     path "inventory_report.tsv", emit: inventory_report
     path "qc_summary.csv",       emit: qc_report
@@ -331,7 +687,7 @@ input:
     script:
     """
     python ${projectDir}/scripts/generate_report.py \\
-        --input_dir ${report_inputs} \\
+        --input_dir ${reportInputDir} \
         --output_inventory inventory_report.tsv \\
         --output_qc qc_summary.csv \\
         --sample ${params.sample}
@@ -379,12 +735,14 @@ process annotateRNATask {
     input:
     tuple path(bam), path(bai), val(genomeName), path(gtf)
     output:
+    val true, emit: completion
     path "*.annotated.ba*"
     path "*.csv"
     path "*_dogme*"
     path "*.log"
     publishDir params.annotDir, mode: 'copy'
     script:
+    def outputPrefix = bam.baseName
     """
     . ${params.scriptEnv}
     # If pipeline is running with CDNA read type, pass -CDNA to annotateRNA
@@ -397,9 +755,9 @@ process annotateRNATask {
     python ${projectDir}/scripts/annotateRNA.py \
         --bam ${bam} \
         --gtf ${gtf} \
-        --out ${bam.simpleName}.${genomeName} \
+        --out ${outputPrefix} \
         --threads ${task.cpus} \$cdna_opt \
-        --novel_prefix "${bam.simpleName}_${genomeName}" 2> ${bam.simpleName}.${genomeName}.log
+        --novel_prefix "${outputPrefix}" 2> ${outputPrefix}.log
     """
 }
 
@@ -467,15 +825,39 @@ workflow modificationWorkflow {
 
     filterbeds = filterbedTask(bedfiles)
     splitResults = splitModificationTask(filterbeds)
-    splitResultsReport = splitResults.last()
-    
+
     if (model_name.contains('6mA')) {
-        consolidatedBedReport = consolidatedBeds.last()
+        reportCompletion = splitResults.collect().combine(consolidatedBeds.collect())
     } else {
-        consolidatedBedReport = nextflow.Channel.of(params.tmpDir)
+        reportCompletion = splitResults.collect()
     }
 
-    generateReport(params.topDir, splitResultsReport, consolidatedBedReport)
+    emit:
+    completion = reportCompletion
+}
+
+workflow demuxModificationWorkflow {
+    take:
+    mapped_bams_ch
+
+    main:
+    if (params.readType == 'RNA') {
+        mappedBamsForStrands = mapped_bams_ch.map { bam, bai, genomeName, sampleName ->
+            tuple(bam, genomeName, sampleName)
+        }
+        strands = demuxSeparateStrandsTask(mappedBamsForStrands)
+        combinedStrand = strands.plus_strand.concat(strands.minus_strand)
+            .map { bam, bai, genomeName, sampleName -> tuple(bam, bai, genomeName, sampleName) }
+        bedfiles = demuxModkitTask(combinedStrand)
+    } else if (params.readType == 'DNA') {
+        bedfiles = demuxModkitTask(mapped_bams_ch)
+    }
+
+    filterbeds = filterbedTask(bedfiles)
+    splitResults = splitModificationTask(filterbeds)
+
+    emit:
+    completion = splitResults.collect()
 }
 
 workflow kallistoWorkflow {
@@ -483,22 +865,53 @@ workflow kallistoWorkflow {
     unmapped_bams_ch
 
     main:
+    def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
     fastqFile = extractfastqTask(unmapped_bams_ch)
+
+    seqspecFile = generateSeqspecTask(
+        fastqFile,
+        file("${projectDir}/templates"),
+        file("${projectDir}/scripts"),
+    )
+
+    if (params.readType == 'CDNA' && singleCellEnabled) {
+        splitcodeInput = fastqFile.combine(seqspecFile)
+            .map { fastq, spec -> tuple(spec, fastq) }
+        splitcodeTask(splitcodeInput)
+    }
 
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
             .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
         refFiles = makeKallistoRefsTask(kallisto_refs_ch)
         indexFiles = kallistoIndexTask(refFiles)
-        kallistoInput = fastqFile.combine(indexFiles)
-            .map { fastq, genomeName, idx, t2g -> tuple(fastq, idx, t2g, genomeName) }
-        kallistoTask(kallistoInput)
-    } else {
-        kallistoInput = fastqFile.map { fastq ->
-            tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+        if (singleCellEnabled) {
+            singleCellInput = splitcodeTask.out.fastqs.combine(indexFiles)
+                .map { cDNA, umi, barcode, genomeName, idx, t2g ->
+                    tuple(cDNA, umi, barcode, idx, t2g, genomeName)
+                }
+            terminalKallisto = singleCellKallistoTask(singleCellInput)
+        } else {
+            kallistoInput = fastqFile.combine(indexFiles)
+                .map { fastq, genomeName, idx, t2g -> tuple(fastq, idx, t2g, genomeName) }
+            terminalKallisto = kallistoTask(kallistoInput)
         }
-        kallistoTask(kallistoInput)
+    } else {
+        if (singleCellEnabled) {
+            singleCellInput = splitcodeTask.out.fastqs.map { cDNA, umi, barcode ->
+                tuple(cDNA, umi, barcode, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+            }
+            terminalKallisto = singleCellKallistoTask(singleCellInput)
+        } else {
+            kallistoInput = fastqFile.map { fastq ->
+                tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+            }
+            terminalKallisto = kallistoTask(kallistoInput)
+        }
     }
+
+    emit:
+    completion = terminalKallisto.collect().combine(seqspecFile.collect())
 }
 
 workflow kallistoFastqWorkflow {
@@ -515,13 +928,42 @@ workflow kallistoFastqWorkflow {
         indexFiles = kallistoIndexTask(refFiles)
         kallistoInput = fastqFile.combine(indexFiles)
             .map { fastq, genomeName, idx, t2g -> tuple(fastq, idx, t2g, genomeName) }
-        kallistoTask(kallistoInput)
+        terminalKallisto = kallistoTask(kallistoInput)
     } else {
         kallistoInput = fastqFile.map { fastq ->
             tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
         }
-        kallistoTask(kallistoInput)
+        terminalKallisto = kallistoTask(kallistoInput)
     }
+
+    emit:
+    completion = terminalKallisto.collect()
+}
+
+workflow demuxKallistoWorkflow {
+    take:
+    fastq_ch
+
+    main:
+    if (!params.kallistoIndex || !params.t2g) {
+        def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
+            .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
+        refFiles = makeKallistoRefsTask(kallisto_refs_ch)
+        indexFiles = kallistoIndexTask(refFiles)
+        kallistoInput = fastq_ch.combine(indexFiles)
+            .map { fastq, sampleName, genomeName, idx, t2g ->
+                tuple(fastq, idx, t2g, genomeName, sampleName)
+            }
+        terminalKallisto = demuxKallistoTask(kallistoInput)
+    } else {
+        kallistoInput = fastq_ch.map { fastq, sampleName ->
+            tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt', sampleName)
+        }
+        terminalKallisto = demuxKallistoTask(kallistoInput)
+    }
+
+    emit:
+    completion = terminalKallisto.collect()
 }
 
 workflow mainWorkflow {
@@ -543,12 +985,70 @@ workflow mainWorkflow {
     bamFiles = doradoTask(pod5_files_ch, modelDirectory, modelPath, theModel).collectFile()
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
+    def genome_annot_ch = nextflow.Channel.fromList(params.genome_annot_refs)
+    def demuxAnnotationBams = Channel.empty()
+    def analysisCompletions = Channel.empty()
+    if (params.kitName) {
+        demuxBamFiles = doradoDemuxTask(unmappedbam).demuxed_bams
+            .flatten()
+        demuxSummary = demuxSummaryTask(demuxBamFiles.collect())
+        analysisCompletions = analysisCompletions.mix(demuxSummary.collect())
+        classifiedBams = demuxBamFiles
+            .filter { bam ->
+                def name = bam.simpleName.toLowerCase()
+                !name.contains('unclassified') && !name.contains('no_barcode')
+            }
+        if (params.keepBarcodes != null) {
+            classifiedBams = selectTopDemuxBamsTask(classifiedBams.collect()).selected_bams
+                .flatten()
+                .map { bam -> tuple(bam, bam.baseName) }
+        } else {
+            classifiedBams = demuxBamFiles.map { bam ->
+                def barcodeDirectory = bam.parent.name
+                def barcodeMatch = barcodeDirectory =~ /(?i)^barcode(\d+)$/
+                if (!barcodeMatch.matches()) {
+                    throw new IllegalArgumentException("Expected a Dorado barcode directory for '${bam}', found '${barcodeDirectory}'")
+                }
+                tuple(bam, "bc${barcodeMatch[0][1]}")
+            }
+        }
+        prepareDemuxBamTask(classifiedBams)
+        classifiedUnmapped = prepareDemuxBamTask.out.classified_unmapped
+            .map { bam ->
+                def sampleName = bam.name.replaceFirst(/\.unmapped\.bam$/, '')
+                tuple(bam, sampleName)
+            }
+        if (params.readType == 'RNA' || params.readType == 'CDNA') {
+            demuxFastq = demuxExtractfastqTask(classifiedUnmapped)
+            demuxSeqspec = demuxGenerateSeqspecTask(
+                demuxFastq,
+                file("${projectDir}/templates"),
+                file("${projectDir}/scripts"),
+            )
+            demuxKallisto = demuxKallistoWorkflow(demuxFastq)
+            analysisCompletions = analysisCompletions.mix(demuxSeqspec.collect())
+            analysisCompletions = analysisCompletions.mix(demuxKallisto.completion)
+        }
+        demuxMappedBams = classifiedUnmapped
+            .combine(genome_annot_ch)
+            .map { bam, sampleName, ref ->
+                tuple(bam, sampleName, ref.genome, ref.annot, ref.name)
+            }
+        demuxMappedResults = demuxMinimapTask(demuxMappedBams)
+        if (params.readType == 'RNA' || params.readType == 'CDNA') {
+            demuxAnnotationBams = demuxMappedResults
+                .map { bam, bai, genomeName, sampleName -> tuple(bam, bai, genomeName) }
+        }
+        if (params.readType == 'RNA' || params.readType == 'DNA') {
+            demuxModifications = demuxModificationWorkflow(demuxMappedResults)
+            analysisCompletions = analysisCompletions.mix(demuxModifications.completion)
+        }
+    }
     
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
-        kallistoWorkflow(unmappedbam)
+        kallistoResults = kallistoWorkflow(unmappedbam)
+        analysisCompletions = analysisCompletions.mix(kallistoResults.completion)
     }
-
-    def genome_annot_ch = nextflow.Channel.fromList(params.genome_annot_refs)
 
     unmappedBams = unmappedbam.combine(genome_annot_ch).map { bam, ref ->
         tuple(bam, ref.genome, ref.annot, ref.name)
@@ -557,14 +1057,18 @@ workflow mainWorkflow {
     def mappedBams = minimapTask.out.mapped_bams
 
     if (params.readType == 'RNA' || params.readType == 'DNA') {
-        modificationWorkflow(mappedBams, theModel)
+        modifications = modificationWorkflow(mappedBams, theModel)
+        analysisCompletions = analysisCompletions.mix(modifications.completion)
     } else {
-        generateReport(params.topDir, mappedBams, Channel.of(params.tmpDir))
+        analysisCompletions = analysisCompletions.mix(mappedBams.collect())
     }
-        // Add annotation step for RNA or CDNA
+
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
-        annotateRNAWorkflow(mappedBams)
+        annotations = annotateRNAWorkflow(mappedBams.mix(demuxAnnotationBams))
+        analysisCompletions = analysisCompletions.mix(annotations.completion)
     }
+
+    generateReport(params.topDir, analysisCompletions.collect())
 }
 
 workflow basecallWorkflow {
@@ -580,6 +1084,17 @@ workflow basecallWorkflow {
     bamFiles = doradoTask(pod5_files_ch, modelDirectory, modelPath, theModel).collectFile()
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
+    if (params.kitName) {
+        demuxedBams = doradoDemuxTask(unmappedbam)
+        classifiedBams = demuxedBams.demuxed_bams
+            .flatten()
+            .filter { bam ->
+                def name = bam.simpleName.toLowerCase()
+                !name.contains('unclassified') && !name.contains('no_barcode')
+            }
+            .map { bam -> tuple(bam, bam.simpleName) }
+        prepareDemuxBamTask(classifiedBams)
+    }
 }
 
 workflow remapWorkflow {
@@ -596,18 +1111,23 @@ workflow remapWorkflow {
     }
     minimapTask(unmappedBams)
     def mappedBams = minimapTask.out.mapped_bams
+    def analysisCompletions = Channel.empty()
 
     if (params.readType == 'RNA' || params.readType == 'DNA') {
-        modificationWorkflow(mappedBams, theModel)
+        modifications = modificationWorkflow(mappedBams, theModel)
+        analysisCompletions = analysisCompletions.mix(modifications.completion)
     } else {
-        generateReport(params.topDir, mappedBams, Channel.of(params.tmpDir))
+        analysisCompletions = analysisCompletions.mix(mappedBams.collect())
     }
 
-    // Add annotation step for RNA or CDNA
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
-        kallistoWorkflow(unmappedbam)
-        annotateRNAWorkflow(mappedBams)
+        kallistoResults = kallistoWorkflow(unmappedbam)
+        annotations = annotateRNAWorkflow(mappedBams)
+        analysisCompletions = analysisCompletions.mix(kallistoResults.completion)
+        analysisCompletions = analysisCompletions.mix(annotations.completion)
     }
+
+    generateReport(params.topDir, analysisCompletions.collect())
 }
 
 workflow fastqCDNAWorkflow {
@@ -634,7 +1154,7 @@ workflow fastqCDNAWorkflow {
     def inputFastq = nextflow.Channel.fromPath(fastqCandidates[0].path, checkIfExists: true)
     def unmappedbam = samtoolsImportTask(inputFastq)
 
-    kallistoFastqWorkflow(inputFastq)
+    kallistoResults = kallistoFastqWorkflow(inputFastq)
 
     def genome_annot_ch = nextflow.Channel.fromList(params.genome_annot_refs)
 
@@ -644,8 +1164,8 @@ workflow fastqCDNAWorkflow {
     minimapTask(unmappedBams)
     def mappedBams = minimapTask.out.mapped_bams
 
-    generateReport(params.topDir, mappedBams, Channel.of(params.tmpDir))
-    annotateRNAWorkflow(mappedBams)
+    annotations = annotateRNAWorkflow(mappedBams)
+    generateReport(params.topDir, kallistoResults.completion.mix(annotations.completion).collect())
 }
 
 workflow reportsWorkflow {
@@ -656,9 +1176,7 @@ workflow reportsWorkflow {
     main:
     softwareVTask(theVersion, modelDirectory)
     
-    placeholder1 = nextflow.Channel.of(params.bamDir)
-    placeholder2 = nextflow.Channel.of(params.tmpDir)
-    generateReport(params.topDir, placeholder1, placeholder2)
+    generateReport(params.topDir, nextflow.Channel.of(true))
 }
 
 workflow annotateRNAWorkflow {
@@ -692,5 +1210,8 @@ workflow annotateRNAWorkflow {
         return results
     }
 
-    annotateRNATask(mappedBamsWithGtf)
+    annotationResults = annotateRNATask(mappedBamsWithGtf)
+
+    emit:
+    completion = annotationResults.completion.collect()
 }

@@ -1,0 +1,178 @@
+!Assay
+seqspec_version: 0.3.1
+assay_id: {{ assay_id }}
+doi: "https://docs.google.com/presentation/d/17yKh6xE5b9Mo4DaXx5uPvFZOIHOW0kbK-QsU2ECwx8c/edit#slide=id.g29abb1440dc_0_500"
+date: "13 August 2024"
+name: {{ assay_name }}
+description: split-pool ligation-based ONT transcriptome sequencing
+modalities:
+  - rna
+lib_struct: ""
+library_protocol: {{ library_protocol }}
+library_kit: {{ library_kit }}
+sequence_protocol: {{ sequence_protocol }}
+sequence_kit: {{ sequence_kit }}
+sequence_spec:
+  - !Read
+    read_id: {{ read_file_id }}
+    name: Fastq for {{ read_file_id }}
+    modality: rna
+    primer_id: truseq_read2
+    min_len: {{ read_min_length }}
+    max_len: {{ read_max_length }}
+    strand: pos
+    files:
+      - !File
+        file_id: {{ read_file_id }}
+        filename: {{ read_file_name }}
+        filetype: {{ read_file_type }}
+        filesize: {{ read_file_size }}
+        url: {{ read_url }}
+        urltype: {{ read_urltype }}
+        md5: {{ read_md5sum }}
+library_spec:
+  - !Region
+    region_id: rna
+    region_type: rna
+    name: rna
+    sequence_type: joined
+    sequence: GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCTNNNNNNNNNNNNNNNNNNNNNNNNGTGGCCGATGTTTCGCATCGGCGTACGACTNNNNNNNNATCCACGTGCTTGAGACTGTGGNNNNNNNNTTTTTTTTXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXCCCATTCACTCTGCGTTGATACCACTGCTT
+    min_len: {{ read_min_length }}
+    max_len: {{ read_max_length }}
+    onlist: null
+    regions:
+      - !Region
+        region_id: truseq_read2
+        region_type: truseq_read2
+        name: Illumina Read 2 reverse complement
+        sequence_type: fixed
+        sequence: GTGACTGGAGTTCAGACGTGTGCTCTTCCGATCT
+        min_len: 34
+        max_len: 34
+        onlist: null
+        regions: null
+        parent_id: rna
+      - !Region
+        region_id: umi
+        region_type: umi
+        name: umi
+        sequence_type: random
+        sequence: NNNNNNNNNN
+        min_len: 10
+        max_len: 10
+        onlist: null
+        regions: null
+        parent_id: rna
+      - !Region
+        region_id: barcode-1
+        region_type: barcode
+        name: barcode-1
+        sequence_type: onlist
+        sequence: NNNNNNNN
+        min_len: 8
+        max_len: 8
+        onlist: !Onlist
+          file_id: {{ barcode_1_file_id }}
+          filename: {{ barcode_1_file_name }}
+          filetype: tsv
+          filesize: {{ barcode_1_file_size }}
+          url: {{ barcode_1_url }}
+          location: {{ barcode_1_location }}
+          md5: {{ barcode_1_md5 }}
+          urltype: https
+        regions: null
+        parent_id: rna
+      - !Region
+        region_id: linker-1
+        region_type: linker
+        name: linker-1
+        sequence_type: fixed
+        sequence: GTGGCCGATGTTTCGCATCGGCGTACGACT
+        min_len: 30
+        max_len: 30
+        onlist: null
+        regions: null
+        parent_id: rna
+      - !Region
+        region_id: barcode-2
+        region_type: barcode
+        name: barcode-2
+        sequence_type: onlist
+        sequence: NNNNNNNN
+        min_len: 8
+        max_len: 8
+        onlist: !Onlist
+          file_id: {{ barcode_2_file_id }}
+          filename: {{ barcode_2_file_name }}
+          filetype: tsv
+          filesize: {{ barcode_2_file_size }}
+          url: {{ barcode_2_url }}
+          location: {{ barcode_2_location }}
+          md5: {{ barcode_2_md5 }}
+          urltype: https
+        regions: null
+        parent_id: rna
+      - !Region
+        region_id: linker-2
+        region_type: linker
+        name: linker-2
+        sequence_type: fixed
+        sequence: ATCCACGTGCTTGAGACTGTGG
+        min_len: 22
+        max_len: 22
+        onlist: null
+        regions: null
+        parent_id: rna
+      - !Region
+        region_id: barcode-3
+        region_type: barcode
+        name: barcode-3
+        sequence_type: onlist
+        sequence: NNNNNNNN
+        min_len: 8
+        max_len: 8
+        onlist: !Onlist
+          file_id: {{ barcode_3_file_id }}
+          filename: {{ barcode_3_file_name }}
+          filetype: tsv
+          filesize: {{ barcode_3_file_size }}
+          url: {{ barcode_3_url }}
+          location: {{ barcode_3_location }}
+          md5: {{ barcode_3_md5 }}
+          urltype: https
+        regions: null
+        parent_id: rna
+      - !Region
+        region_id: polyT
+        region_type: poly_t
+        name: poly(T)
+        sequence_type: fixed
+        sequence: TTTTTTTT
+        min_len: 8
+        max_len: 8
+        onlist: null
+        regions: null
+        parent_id: rna
+      - !Region
+        region_id: cDNA
+        region_type: cdna
+        name: cDNA
+        sequence_type: random
+        sequence: X
+        min_len: {{ read_min_length }}
+        max_len: {{ read_max_length - 158 }}
+        onlist: null
+        regions: null
+        parent_id: rna
+      - !Region
+        region_id: tso
+        region_type: custom_primer
+        name: TSO reverse complement
+        sequence_type: fixed
+        sequence: CCCATTCACTCTGCGTTGATACCACTGCTT
+        min_len: 30
+        max_len: 30
+        onlist: null
+        regions: null
+        parent_id: rna
+    parent_id: null

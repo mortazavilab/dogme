@@ -20,8 +20,25 @@ def getParamOrDefault(param, defaultValue) {
 }
 
 // Set the default value at the workflow level
-def dogmeVersion = "1.3.2"
+def dogmeVersion = "1.4.0"
 def defaultModDir = "${launchDir}/doradoModels"
+
+params.singleCell = params.containsKey('singleCell') ? params.singleCell : false
+params.singleCellKit = params.containsKey('singleCellKit') ? params.singleCellKit : null
+params.seqspec = params.containsKey('seqspec') ? params.seqspec : null
+params.seqspecTemplate = params.containsKey('seqspecTemplate') ? params.seqspecTemplate : null
+params.seqspecVariables = params.containsKey('seqspecVariables') ? params.seqspecVariables : null
+params.seqspecMd5 = params.containsKey('seqspecMd5') ? params.seqspecMd5 : true
+params.kitName = params.kitName == null ? null : params.kitName.toString().trim()
+params.keepBarcodes = (params.keepBarcodes == null || params.keepBarcodes.toString().trim() == '') ? null : params.keepBarcodes.toString().trim().toInteger()
+
+if (params.keepBarcodes != null && params.keepBarcodes < 1) {
+    throw new IllegalArgumentException("keepBarcodes must be a positive integer or null")
+}
+
+def singleCellEnabled(value) {
+    value instanceof Boolean && value
+}
 
 // Define modificationsMap once here, to be reused across workflows
 def modificationsMap = [

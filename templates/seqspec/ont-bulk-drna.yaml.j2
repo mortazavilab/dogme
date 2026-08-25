@@ -1,0 +1,72 @@
+!Assay
+seqspec_version: 0.3.0
+assay_id: ont-bulk-dRNA
+name: Bulk direct RNA sequencing (Oxford Nanopore)
+doi: ""
+date: "{{ date }}"
+description: bulk native poly(A)+ RNA sequenced directly on ONT; single long read per RNA molecule, no cell barcode, no UMI
+modalities:
+  - rna
+lib_struct: ""
+sequence_protocol: Oxford Nanopore PromethION
+sequence_kit: SQK-RNA004
+library_protocol: ONT Direct RNA Sequencing
+library_kit: SQK-RNA004
+sequence_spec:
+  - !Read
+    read_id: {{ read_file_id }}
+    name: dRNA read
+    modality: rna
+    primer_id: rta_adapter
+    min_len: {{ read_min_length }}
+    max_len: {{ read_max_length }}
+    strand: pos
+    files:
+      - !File
+        file_id: {{ read_file_id }}
+        filename: {{ read_file_name }}
+        filetype: {{ read_file_type }}
+        filesize: {{ read_file_size }}
+        url: {{ read_url }}
+        urltype: {{ read_urltype }}
+        md5: {{ read_md5sum }}
+library_spec:
+  - !Region
+    region_id: rna
+    region_type: rna
+    name: rna
+    sequence_type: joined
+    min_len: {{ read_min_length }}
+    max_len: {{ read_max_length }}
+    onlist: null
+    regions:
+      - !Region
+        region_id: rta_adapter
+        region_type: linker
+        name: RTA/RMX sequencing adapter
+        sequence_type: fixed
+        sequence: GGCTTCTTCTTGCTCTTAGGTAGTAGGTTC
+        min_len: 30
+        max_len: 30
+        onlist: null
+        regions: null
+      - !Region
+        region_id: polyA
+        region_type: poly_A
+        name: poly(A) tail
+        sequence_type: random
+        sequence: X
+        min_len: 10
+        max_len: 300
+        onlist: null
+        regions: null
+      - !Region
+        region_id: native_rna
+        region_type: cdna
+        name: native RNA transcript
+        sequence_type: random
+        sequence: X
+        min_len: 50
+        max_len: {{ read_max_length }}
+        onlist: null
+        regions: null

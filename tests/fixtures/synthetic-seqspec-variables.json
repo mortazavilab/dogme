@@ -1,0 +1,19 @@
+{
+  "assay_id": "synthetic-dogme",
+  "doi": "https://doi.org/10.0000/synthetic-dogme",
+  "date": "2026-08-10",
+  "assay_name": "Synthetic DOGME assay",
+  "library_protocol": "synthetic",
+  "library_kit": "synthetic-kit",
+  "sequence_protocol": "synthetic",
+  "sequence_kit": "synthetic-kit",
+  "read_file_id": "read-1",
+  "read_file_name": "synthetic.fastq",
+  "read_file_type": "fastq",
+  "read_file_size": 0,
+  "read_url": "synthetic.fastq",
+  "read_urltype": "local",
+  "read_md5sum": null,
+  "read_min_length": 1,
+  "read_max_length": 1000
+}
