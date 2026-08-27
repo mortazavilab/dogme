@@ -6,6 +6,10 @@ nextflow.enable.dsl=2
 include { openChromatinTask as openChromatinTaskBg } from './modkitModule'
 include { openChromatinTask as openChromatinTaskBed } from './modkitModule'
 
+def isSingleCellEnabled() {
+    params.singleCell instanceof Boolean ? params.singleCell : params.singleCell?.toString()?.toBoolean()
+}
+
 process softwareVTask {
     input:
     val version
@@ -400,7 +404,7 @@ process extractfastqTask {
     script:
     """
     . ${params.scriptEnv}
-    samtools fastq --threads 6 ${params.sample}.unmapped.bam > ${params.sample}.fastq
+    samtools fastq --threads 6 ${inputFile} > ${params.sample}.fastq
     gzip -v ${params.sample}.fastq
     """
 }
@@ -432,7 +436,7 @@ process demuxGenerateSeqspecTask {
     publishDir params.fastqDir, mode: 'copy'
     script:
     def outputSpec = "${sampleName}.seqspec.yaml"
-    def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
+    def singleCellEnabled = isSingleCellEnabled()
     def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
     def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
     def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
@@ -464,7 +468,7 @@ process generateSeqspecTask {
     publishDir params.fastqDir, mode: 'copy'
     script:
     def outputSpec = "${params.sample}.seqspec.yaml"
-    def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
+    def singleCellEnabled = isSingleCellEnabled()
     def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
     def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
     def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
@@ -865,7 +869,7 @@ workflow kallistoWorkflow {
     unmapped_bams_ch
 
     main:
-    def singleCellEnabled = params.containsKey('singleCell') && params.singleCell
+    def singleCellEnabled = isSingleCellEnabled()
     fastqFile = extractfastqTask(unmapped_bams_ch)
 
     seqspecFile = generateSeqspecTask(

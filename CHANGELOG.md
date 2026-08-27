@@ -14,6 +14,8 @@ All notable DOGME changes are documented here.
 
 ### Fixed
 
+- Ensure the `remap` entry point regenerates SeqSpec and reruns Splitcode for single-cell cDNA inputs from unmapped BAMs.
+- Make remap FASTQ extraction consume the discovered BAM input, while preserving support for the existing `${sample}.unmapped.bam` naming convention.
 - Correct Parse Evercode WT Mega v2 Nanopore single-cell extraction geometry: recover the 10-base UMI and ordered 24-base barcode from the TruSeq-R2 reverse-complement side, trim poly(T)/TSO technical sequence, and emit normalized cDNA for forward and reverse-complement reads.
 - Make splitcode FASTQ combining skip absent orientation streams, exclude ambiguous read IDs before writing, preserve barcode quality orientation, and publish `${sample}_splitcode_qc.tsv` with input, empty, ambiguous, missing-orientation, and emitted-triplet counts.
 - Preserve splitcode's configured one-mismatch linker tolerance (`1:1:1`) instead of applying an exact-anchor filter to unclassified reads.

@@ -53,6 +53,16 @@ def test_select_builtin_single_cell_template():
     assert select_template("CDNA", True, ROOT / "templates" / "seqspec").name == "parse-evercode-wt-mega-v2-nanopore.yaml.j2"
 
 
+def test_remap_single_cell_cdna_runs_kallisto_preprocessing():
+    nextflow = (ROOT / "nanoporeModule.nf").read_text()
+    remap_workflow = nextflow.split("workflow remapWorkflow", 1)[1].split("workflow fastqCDNAWorkflow", 1)[0]
+    extract_fastq_task = nextflow.split("process extractfastqTask", 1)[1].split("process demuxExtractfastqTask", 1)[0]
+
+    assert "kallistoResults = kallistoWorkflow(unmappedbam)" in remap_workflow
+    assert "def singleCellEnabled = isSingleCellEnabled()" in nextflow
+    assert "samtools fastq --threads 6 ${inputFile}" in extract_fastq_task
+
+
 def test_unsupported_template_combination_names_inputs():
     with pytest.raises(ValueError, match="readType=DNA singleCell=true"):
         select_template("DNA", True, ROOT / "templates" / "seqspec")
