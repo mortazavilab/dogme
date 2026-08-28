@@ -329,7 +329,8 @@ process modkitTask {
     tuple path(inputFile), path(inputBai), val(genomeName)
 
     output:
-    path "*.bed.gz"
+    path "*.bed.gz", emit: beds
+    path "*.bed.gz.tbi", emit: indexes
 
     publishDir params.bedDir, mode: 'copy'
     script:
@@ -348,8 +349,11 @@ process modkitTask {
             bedFileOutput="${params.sample}.${genomeName}.minus.bed"
         fi
     fi
-    modkit pileup -t 12 ${filterThresholdArg} "${inputFile}" "\${bedFileOutput}"
-    gzip "\${bedFileOutput}"
+    modkit pileup -t ${task.cpus} ${filterThresholdArg} "${inputFile}" "\${bedFileOutput}"
+    LC_ALL=C sort -k1,1 -k2,2n -k3,3n "\${bedFileOutput}" > "\${bedFileOutput}.sorted"
+    bgzip -@ ${task.cpus} -c "\${bedFileOutput}.sorted" > "\${bedFileOutput}.gz"
+    tabix -f -p bed "\${bedFileOutput}.gz"
+    rm -f "\${bedFileOutput}" "\${bedFileOutput}.sorted"
     """
 }
 
@@ -357,7 +361,8 @@ process demuxModkitTask {
     input:
     tuple path(inputFile), path(inputBai), val(genomeName), val(sampleName)
     output:
-    path "*.bed.gz", optional: true
+    path "*.bed.gz", optional: true, emit: beds
+    path "*.bed.gz.tbi", optional: true, emit: indexes
     publishDir params.bedDir, mode: 'copy'
     script:
     def filterThresholdArg = ''
@@ -375,8 +380,11 @@ process demuxModkitTask {
         fi
     fi
     if [[ "\$(samtools view -c -F 4 ${inputFile})" -gt 0 ]]; then
-        modkit pileup -t 12 ${filterThresholdArg} "${inputFile}" "\${bedFileOutput}"
-        gzip "\${bedFileOutput}"
+        modkit pileup -t ${task.cpus} ${filterThresholdArg} "${inputFile}" "\${bedFileOutput}"
+        LC_ALL=C sort -k1,1 -k2,2n -k3,3n "\${bedFileOutput}" > "\${bedFileOutput}.sorted"
+        bgzip -@ ${task.cpus} -c "\${bedFileOutput}.sorted" > "\${bedFileOutput}.gz"
+        tabix -f -p bed "\${bedFileOutput}.gz"
+        rm -f "\${bedFileOutput}" "\${bedFileOutput}.sorted"
     fi
     """
 }
@@ -385,13 +393,18 @@ process filterbedTask {
     input:
     path inputFile
     output:
-    path "*.filtered*.bed.gz"
+    path "*.filtered*.bed.gz", emit: beds
+    path "*.filtered*.bed.gz.tbi", emit: indexes
     publishDir params.bedDir, mode: 'copy'
     script:
     """
     output_prefix="\$(basename "${inputFile}" .bed.gz)"
-    bedFileOutput="\${output_prefix}.filtered-${params.minCov}-${params.perMod}.bed.gz"
+    bedFileOutput="\${output_prefix}.filtered-${params.minCov}-${params.perMod}.bed"
     python ${projectDir}/scripts/filterbed.py ${params.minCov} ${params.perMod} "${inputFile}" \${bedFileOutput}
+    LC_ALL=C sort -k1,1 -k2,2n -k3,3n "\${bedFileOutput}" > "\${bedFileOutput}.sorted"
+    bgzip -@ ${task.cpus} -c "\${bedFileOutput}.sorted" > "\${bedFileOutput}.gz"
+    tabix -f -p bed "\${bedFileOutput}.gz"
+    rm -f "\${bedFileOutput}" "\${bedFileOutput}.sorted"
     """
 }
 
@@ -404,8 +417,8 @@ process extractfastqTask {
     script:
     """
     . ${params.scriptEnv}
-    samtools fastq --threads 6 ${inputFile} > ${params.sample}.fastq
-    gzip -v ${params.sample}.fastq
+    samtools fastq --threads ${task.cpus} ${inputFile} > ${params.sample}.fastq
+    bgzip -@ ${task.cpus} -f ${params.sample}.fastq
     """
 }
 
@@ -419,8 +432,8 @@ process demuxExtractfastqTask {
     script:
     """
     . ${params.scriptEnv}
-    samtools fastq --threads 6 ${inputFile} > ${sampleName}.fastq
-    gzip -v ${sampleName}.fastq
+    samtools fastq --threads ${task.cpus} ${inputFile} > ${sampleName}.fastq
+    bgzip -@ ${task.cpus} -f ${sampleName}.fastq
     """
 }
 
@@ -527,7 +540,7 @@ process splitcodeTask {
     rm -f barcode.fastq.gz
     splitcode -c ${projectDir}/templates/splitcode/config.mergeRT \
         -o "${params.sample}_barcode.fastq" "${params.sample}_barcode.extracted.fastq.gz" -t 2
-    gzip -f "${params.sample}_barcode.fastq"
+    bgzip -@ ${task.cpus} -f "${params.sample}_barcode.fastq"
     rm -f "${params.sample}_barcode.extracted.fastq.gz" _barcode.from-cdna.fastq.gz \
         _barcode.from-umi.fastq.gz
     """
@@ -631,46 +644,64 @@ process splitModificationTask {
     input:
     path inputFile
     output:
-    path "*.filtered*.bed.gz", optional: true
+    path "*.filtered*.bed.gz", optional: true, emit: beds
+    path "*.filtered*.bed.gz.tbi", optional: true, emit: indexes
     publishDir params.bedDir, mode: 'copy'
     script:
     """
     . ${params.scriptEnv}
     input_prefix="\$(basename "${inputFile}" .bed.gz)"
+    compress_and_index() {
+        input_bed="\$1"
+        output_bed="\$2"
+        sorted_bed="\${output_bed}.sorted"
+        LC_ALL=C sort -k1,1 -k2,2n -k3,3n "\${input_bed}" > "\${sorted_bed}"
+        bgzip -@ ${task.cpus} -c "\${sorted_bed}" > "\${output_bed}"
+        tabix -f -p bed "\${output_bed}"
+        rm -f "\${input_bed}" "\${sorted_bed}"
+    }
     if [[ "${params.readType}" == "DNA" ]]; then 
         # Extract 5mCG (methylation)
-        if gzip -cd "${inputFile}" | grep -q -w 'm'; then
-            gzip -cd "${inputFile}" | grep -w 'm' | gzip -c > "\${input_prefix}.5mCG.filtered.bed.gz"
+        if bgzip -cd "${inputFile}" | grep -q -w 'm'; then
+            bgzip -cd "${inputFile}" | grep -w 'm' > "\${input_prefix}.5mCG.filtered.bed.tmp"
+            compress_and_index "\${input_prefix}.5mCG.filtered.bed.tmp" "\${input_prefix}.5mCG.filtered.bed.gz"
         fi
         # Extract 5hmCG (hydroxymethylation)
-        if gzip -cd "${inputFile}" | grep -q -w 'h'; then
-            gzip -cd "${inputFile}" | grep -w 'h' | gzip -c > "\${input_prefix}.5hmCG.filtered.bed.gz"
+        if bgzip -cd "${inputFile}" | grep -q -w 'h'; then
+            bgzip -cd "${inputFile}" | grep -w 'h' > "\${input_prefix}.5hmCG.filtered.bed.tmp"
+            compress_and_index "\${input_prefix}.5hmCG.filtered.bed.tmp" "\${input_prefix}.5hmCG.filtered.bed.gz"
         fi
         # Extract 6mA
-        if gzip -cd "${inputFile}" | grep -q -w 'a'; then
-            gzip -cd "${inputFile}" | grep -w 'a' | gzip -c > "\${input_prefix}.6mA.filtered.bed.gz"
+        if bgzip -cd "${inputFile}" | grep -q -w 'a'; then
+            bgzip -cd "${inputFile}" | grep -w 'a' > "\${input_prefix}.6mA.filtered.bed.tmp"
+            compress_and_index "\${input_prefix}.6mA.filtered.bed.tmp" "\${input_prefix}.6mA.filtered.bed.gz"
         fi
     elif [[ "${params.readType}" == "RNA" ]]; then
         base_name="\${input_prefix}"
         # Extract m6A modifications (Plus & Minus strands)
-        if gzip -cd "${inputFile}" | grep -q -w 'a'; then
-            gzip -cd "${inputFile}" | grep -w 'a' | gzip -c > "\${base_name/filtered*/m6A.filtered}.bed.gz"
+        if bgzip -cd "${inputFile}" | grep -q -w 'a'; then
+            bgzip -cd "${inputFile}" | grep -w 'a' > "\${base_name/filtered*/m6A.filtered}.bed.tmp"
+            compress_and_index "\${base_name/filtered*/m6A.filtered}.bed.tmp" "\${base_name/filtered*/m6A.filtered}.bed.gz"
         fi
         # Extract inosine modifications (Plus & Minus strands)
-        if gzip -cd "${inputFile}" | grep -q -w '17596'; then
-            gzip -cd "${inputFile}" | grep -w '17596' | gzip -c > "\${base_name/filtered*/inosine.filtered}.bed.gz"
+        if bgzip -cd "${inputFile}" | grep -q -w '17596'; then
+            bgzip -cd "${inputFile}" | grep -w '17596' > "\${base_name/filtered*/inosine.filtered}.bed.tmp"
+            compress_and_index "\${base_name/filtered*/inosine.filtered}.bed.tmp" "\${base_name/filtered*/inosine.filtered}.bed.gz"
         fi
         # Extract pseudouridine (pseU) modifications (Plus & Minus strands)
-        if gzip -cd "${inputFile}" | grep -q -w '17802'; then
-            gzip -cd "${inputFile}" | grep -w '17802' | gzip -c > "\${base_name/filtered*/pseU.filtered}.bed.gz"
+        if bgzip -cd "${inputFile}" | grep -q -w '17802'; then
+            bgzip -cd "${inputFile}" | grep -w '17802' > "\${base_name/filtered*/pseU.filtered}.bed.tmp"
+            compress_and_index "\${base_name/filtered*/pseU.filtered}.bed.tmp" "\${base_name/filtered*/pseU.filtered}.bed.gz"
         fi
         # Extract m5C modifications (Plus & Minus strands)
-        if gzip -cd "${inputFile}" | grep -q -w 'm'; then
-            gzip -cd "${inputFile}" | grep -w 'm' | gzip -c > "\${base_name/filtered*/m5C.filtered}.bed.gz"
+        if bgzip -cd "${inputFile}" | grep -q -w 'm'; then
+            bgzip -cd "${inputFile}" | grep -w 'm' > "\${base_name/filtered*/m5C.filtered}.bed.tmp"
+            compress_and_index "\${base_name/filtered*/m5C.filtered}.bed.tmp" "\${base_name/filtered*/m5C.filtered}.bed.gz"
         fi
         # Extract Nm modifications (Plus & Minus strands)
-        if gzip -cd "${inputFile}" | grep -qE -w '19228|19229|19227|69426'; then
-            gzip -cd "${inputFile}" | grep -Ew '19228|19229|19227|69426' | gzip -c > "\${base_name/filtered*/Nm.filtered}.bed.gz"
+        if bgzip -cd "${inputFile}" | grep -qE -w '19228|19229|19227|69426'; then
+            bgzip -cd "${inputFile}" | grep -Ew '19228|19229|19227|69426' > "\${base_name/filtered*/Nm.filtered}.bed.tmp"
+            compress_and_index "\${base_name/filtered*/Nm.filtered}.bed.tmp" "\${base_name/filtered*/Nm.filtered}.bed.gz"
         fi
     fi
     """
@@ -703,11 +734,15 @@ process consolidateOpenChromatinBedTask {
     input:
     tuple val(genomeName), path(bed_files)
     output:
-    path "${params.sample}.${genomeName}.m6Aopen.bed"
+    path "${params.sample}.${genomeName}.m6Aopen.bed.gz", emit: beds
+    path "${params.sample}.${genomeName}.m6Aopen.bed.gz.tbi", emit: indexes
     publishDir "${params.topDir}/openChromatin", mode: 'copy'
     script:
     """
-    cat \$(ls ${bed_files} | sort) > ${params.sample}.${genomeName}.m6Aopen.bed
+    cat \$(ls ${bed_files} | sort) | LC_ALL=C sort -k1,1 -k2,2n -k3,3n > ${params.sample}.${genomeName}.m6Aopen.bed.sorted
+    bgzip -@ ${task.cpus} -c ${params.sample}.${genomeName}.m6Aopen.bed.sorted > ${params.sample}.${genomeName}.m6Aopen.bed.gz
+    tabix -f -p bed ${params.sample}.${genomeName}.m6Aopen.bed.gz
+    rm -f ${params.sample}.${genomeName}.m6Aopen.bed.sorted
     """
 }
 
@@ -779,7 +814,8 @@ workflow modificationWorkflow {
         plusStrand = strands.plus_strand
         minusStrand = strands.minus_strand
         combinedStrand = plusStrand.concat(minusStrand)
-        bedfiles = modkitTask(combinedStrand)
+        modkitTask(combinedStrand)
+        bedfiles = modkitTask.out.beds
     } else if (params.readType == 'DNA') {
         mappedBamsTuplesDNA = mapped_bams_ch.map { it -> tuple(*it) }
 
@@ -824,14 +860,17 @@ workflow modificationWorkflow {
         }
 
         mappedBamsForModkit = mappedBamsTuplesDNA.map { bam, bai, genomeName -> tuple(bam, bai, genomeName) }
-        bedfiles = modkitTask(mappedBamsForModkit)
+        modkitTask(mappedBamsForModkit)
+        bedfiles = modkitTask.out.beds
     }
 
-    filterbeds = filterbedTask(bedfiles)
-    splitResults = splitModificationTask(filterbeds)
+    filterbedTask(bedfiles)
+    filterbeds = filterbedTask.out.beds
+    splitModificationTask(filterbeds)
+    splitResults = splitModificationTask.out.beds
 
     if (model_name.contains('6mA')) {
-        reportCompletion = splitResults.collect().combine(consolidatedBeds.collect())
+        reportCompletion = splitResults.collect().combine(consolidatedBeds.beds.collect())
     } else {
         reportCompletion = splitResults.collect()
     }
@@ -852,13 +891,17 @@ workflow demuxModificationWorkflow {
         strands = demuxSeparateStrandsTask(mappedBamsForStrands)
         combinedStrand = strands.plus_strand.concat(strands.minus_strand)
             .map { bam, bai, genomeName, sampleName -> tuple(bam, bai, genomeName, sampleName) }
-        bedfiles = demuxModkitTask(combinedStrand)
+        demuxModkitTask(combinedStrand)
+        bedfiles = demuxModkitTask.out.beds
     } else if (params.readType == 'DNA') {
-        bedfiles = demuxModkitTask(mapped_bams_ch)
+        demuxModkitTask(mapped_bams_ch)
+        bedfiles = demuxModkitTask.out.beds
     }
 
-    filterbeds = filterbedTask(bedfiles)
-    splitResults = splitModificationTask(filterbeds)
+    filterbedTask(bedfiles)
+    filterbeds = filterbedTask.out.beds
+    splitModificationTask(filterbeds)
+    splitResults = splitModificationTask.out.beds
 
     emit:
     completion = splitResults.collect()
@@ -889,7 +932,7 @@ workflow kallistoWorkflow {
             .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
         refFiles = makeKallistoRefsTask(kallisto_refs_ch)
         indexFiles = kallistoIndexTask(refFiles)
-        if (singleCellEnabled) {
+        if (params.readType == 'CDNA' && singleCellEnabled) {
             singleCellInput = splitcodeTask.out.fastqs.combine(indexFiles)
                 .map { cDNA, umi, barcode, genomeName, idx, t2g ->
                     tuple(cDNA, umi, barcode, idx, t2g, genomeName)
@@ -901,7 +944,7 @@ workflow kallistoWorkflow {
             terminalKallisto = kallistoTask(kallistoInput)
         }
     } else {
-        if (singleCellEnabled) {
+        if (params.readType == 'CDNA' && singleCellEnabled) {
             singleCellInput = splitcodeTask.out.fastqs.map { cDNA, umi, barcode ->
                 tuple(cDNA, umi, barcode, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
             }

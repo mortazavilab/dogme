@@ -4,7 +4,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## What's New in Dogme 1.4.0
+## What's New in Dogme 1.4.1
 
 - **End-to-end single-cell cDNA workflow:** With `readType = 'CDNA'` and `singleCell = true`, DOGME generates and validates seqspec metadata, splits and corrects cDNA/UMI/barcode FASTQs with splitcode, and runs single-cell kallisto/bustools quantification.
 - **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. Single-cell cDNA runs additionally generate a splitcode configuration and processed FASTQ.
@@ -36,7 +36,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   - Processes include retry/error strategies for robustness of long-running tasks.
 
 
-Dogme 1.4.0 carries forward the 1.3.3 workflow updates, including seqspec generation, single-cell cDNA splitting, and single-cell kallisto/bustools quantification.
+Dogme 1.4.1 carries forward the 1.3.3 workflow updates, including seqspec generation, single-cell cDNA splitting, and single-cell kallisto/bustools quantification.
 
 ---
 
@@ -51,7 +51,7 @@ The following Python scripts are included or updated in the scripts/ directory. 
   - Converts a GTF into a junction BED suitable for minimap2 spliced alignment. This is used automatically for RNA and CDNA mapping.
 
 - scripts/filterbed.py
-  - Filters modkit bed outputs by minimum coverage and per-mod thresholds (params.minCov and params.perMod), reading and writing compressed `.bed.gz` files for the BED workflow.
+  - Filters modkit bed outputs by minimum coverage and per-mod thresholds (params.minCov and params.perMod). The workflow writes the filtered result as sorted BGZF after this script completes.
 
 - scripts/annotateRNA.py
   - Annotates mapped BAMs with transcript information. Now outputs TALON-compatible outputs and expanded QC CSVs by default. Accepts a -CDNA flag for cDNA-specific behavior.
@@ -183,7 +183,15 @@ Running Dogme on typical dataset can take more than 24 hours, therefore it is re
  ```
 nextflow run mortazavilab/dogme -c yourconfig.conf
 ```
-By default, the pipeline will create several folders within the launch directory such as bams, bedMethyl, fastqs, and kallisto - all of which can be customized in the config file. The `bedMethyl` directory stores compressed `.bed.gz` outputs for the raw modkit BEDs, filtered BEDs, and final per-modification BEDs. If you need to resume your work add '-resume' to the nextflow command after deleting the html report and trace files.
+By default, the pipeline will create several folders within the launch directory such as bams, bedMethyl, fastqs, and kallisto - all of which can be customized in the config file. The `bedMethyl` directory stores coordinate-sorted BGZF `.bed.gz` outputs for the raw modkit BEDs, filtered BEDs, and final per-modification BEDs. Each published BED has a matching `.bed.gz.tbi` tabix index. The final consolidated open-chromatin BEDs are also sorted, BGZF-compressed, and indexed under `openChromatin`. Existing plain-gzip `.bed.gz` files must be regenerated before they can be queried with tabix. If you need to resume your work add '-resume' to the nextflow command after deleting the html report and trace files.
+
+FASTQs extracted from BAMs and the final single-cell barcode FASTQ use multithreaded BGZF compression with the CPUs allocated to their Nextflow task. Their `.fastq.gz` names and gzip-compatible contents are unchanged.
+
+Indexed BEDs can be queried by genomic interval with tabix, for example:
+
+```
+tabix bedMethyl/sample.mm39.m6A.filtered.bed.gz chr1:100000-101000
+```
 
 ---
 
@@ -338,6 +346,6 @@ Two common modes:
   - Note: on Macs Docker behaves differently for GPU — GPUs are typically not available on macOS Docker; use a Linux/GPU host or Singularity on cluster for GPU tasks.
 
 Important notes:
-- If you run Dogme inside the container image above you do not need to install the listed tools on the host. If you choose not to use containers, you must install dorado, minimap2, samtools, modkit, kallisto, and bustools and ensure they are visible in the PATH (see dogme.profile).
+- If you run Dogme inside the container image above you do not need to install the listed tools on the host. If you choose not to use containers, you must install dorado, minimap2, samtools, modkit, bgzip, tabix, kallisto, and bustools and ensure they are visible in the PATH (see dogme.profile).
 - Ensure any large shared storage mountpoints used by the pipeline (e.g. /path/to/your/data1, /path/to/your/data2) are bound into the container with `containerOptions` so the container can read/write data.
 - GPU-enabled steps (dorado / modkit GPU) require adding `--nv` for Singularity or `--gpus` for Docker and a host with GPUs + appropriate drivers.

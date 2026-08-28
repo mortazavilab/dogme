@@ -60,7 +60,7 @@ def test_remap_single_cell_cdna_runs_kallisto_preprocessing():
 
     assert "kallistoResults = kallistoWorkflow(unmappedbam)" in remap_workflow
     assert "def singleCellEnabled = isSingleCellEnabled()" in nextflow
-    assert "samtools fastq --threads 6 ${inputFile}" in extract_fastq_task
+    assert "samtools fastq --threads ${task.cpus} ${inputFile}" in extract_fastq_task
 
 
 def test_unsupported_template_combination_names_inputs():

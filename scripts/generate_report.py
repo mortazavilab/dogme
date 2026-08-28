@@ -34,8 +34,8 @@ def collect_file_info(directory):
     file_data = []
     search_patterns = {
         "bams": [("*.bam", "bam")],
-        "bedMethyl": [("*.bed.gz", "bed.gz"), ("*.bed", "bed")],
-        "openChromatin": [("*.bed", "bed")],
+        "bedMethyl": [("*.bed.gz", "bed.gz"), ("*.bed.gz.tbi", "bed.gz.tbi"), ("*.bed", "bed")],
+        "openChromatin": [("*.bed.gz", "bed.gz"), ("*.bed.gz.tbi", "bed.gz.tbi"), ("*.bed", "bed")],
         "annot": [("*.bam", "bam"), ("*.csv", "csv"), ("*.tsv", "tsv"), ("*.gtf", "gtf")]
     }
     print("Scanning for files to inventory...")

@@ -2,7 +2,7 @@
 
 All notable DOGME changes are documented here.
 
-## [Unreleased]
+## [1.4.1] - 2026-08-27
 
 ### Added
 
@@ -14,6 +14,8 @@ All notable DOGME changes are documented here.
 
 ### Fixed
 
+- Use multithreaded BGZF compression for FASTQs extracted from BAMs and final single-cell barcode FASTQs.
+- Replace plain gzip BED compression with coordinate-sorted multithreaded BGZF compression and tabix indexes for published modkit and final open-chromatin BED outputs.
 - Ensure the `remap` entry point regenerates SeqSpec and reruns Splitcode for single-cell cDNA inputs from unmapped BAMs.
 - Make remap FASTQ extraction consume the discovered BAM input, while preserving support for the existing `${sample}.unmapped.bam` naming convention.
 - Correct Parse Evercode WT Mega v2 Nanopore single-cell extraction geometry: recover the 10-base UMI and ordered 24-base barcode from the TruSeq-R2 reverse-complement side, trim poly(T)/TSO technical sequence, and emit normalized cDNA for forward and reverse-complement reads.
