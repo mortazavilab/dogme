@@ -29,8 +29,18 @@ params.seqspec = params.containsKey('seqspec') ? params.seqspec : null
 params.seqspecTemplate = params.containsKey('seqspecTemplate') ? params.seqspecTemplate : null
 params.seqspecVariables = params.containsKey('seqspecVariables') ? params.seqspecVariables : null
 params.seqspecMd5 = params.containsKey('seqspecMd5') ? params.seqspecMd5 : true
+params.singleCellH5ad = params.containsKey('singleCellH5ad') ? params.singleCellH5ad : true
+params.singleCellEntity = params.containsKey('singleCellEntity') && params.singleCellEntity ? params.singleCellEntity.toString().trim().toLowerCase() : 'cell'
 params.kitName = params.kitName == null ? null : params.kitName.toString().trim()
 params.keepBarcodes = (params.keepBarcodes == null || params.keepBarcodes.toString().trim() == '') ? null : params.keepBarcodes.toString().trim().toInteger()
+
+if (!(params.singleCellH5ad instanceof Boolean)) {
+    throw new IllegalArgumentException("singleCellH5ad must be true or false")
+}
+
+if (!(params.singleCellEntity in ['cell', 'nucleus'])) {
+    throw new IllegalArgumentException("singleCellEntity must be either 'cell' or 'nucleus'")
+}
 
 if (params.keepBarcodes != null && params.keepBarcodes < 1) {
     throw new IllegalArgumentException("keepBarcodes must be a positive integer or null")

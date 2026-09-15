@@ -2,6 +2,14 @@
 
 All notable DOGME changes are documented here.
 
+## [Unreleased]
+
+### Added
+
+- Added optional H5AD generation for `CDNA` single-cell runs, publishing separate sparse cell-by-gene and cell-by-transcript AnnData files per genome; transcript counts use an identity transcript map so features remain individual transcripts rather than compatibility classes.
+- Added `singleCellH5ad` and `singleCellEntity` parameters, with raw count, barcode, feature, QC, transcript-to-gene, and pipeline metadata in the generated H5AD files.
+- Added `requirements-h5ad.txt` documenting the Python packages required by the execution image.
+
 ## [1.4.1] - 2026-08-27
 
 ### Added

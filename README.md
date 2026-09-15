@@ -20,6 +20,8 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   Added a `kallisto` entry point that starts from unmapped BAMs, extracts FASTQ, and runs the kallisto long-read quantification steps without re-running basecalling or remapping.
 - **Single-cell kallisto/bustools quantification:**
   Added a `kb count`-equivalent workflow using kallisto and bustools alone, with long-read mode, technology string `2,0,24:1,0,10:0,0,0`, barcode whitelist correction, and support for precomputed or auto-built `k=63` indexes.
+- **Single-cell H5AD expression outputs:**
+  Single-cell cDNA runs now publish separate cell-by-gene and cell-by-transcript AnnData H5AD files from the kallisto/bustools count matrices.
 - **Automatic GTF-to-Junction BED Conversion:**  
   The pipeline now automatically converts GTF files to junction BED files for minimap2 spliced alignment, ensuring correct handling of RNA and cDNA mapping.
 - **Increased Maximum Intron Size:**  
@@ -113,6 +115,8 @@ params {
 
     // Optional seqspec generation for FASTQs created by DOGME.
     singleCell = false
+    singleCellH5ad = true
+    singleCellEntity = 'cell' // or 'nucleus'; metadata only, not inferred
     singleCellKit = null
     seqspecTemplate = null
     seqspecVariables = null
@@ -269,6 +273,26 @@ using it for production data.
 The renderer and splitcode task run inside `ghcr.io/mortazavilab/dogme-pipeline:latest` by default. The image must provide both `seqspec` and `splitcode` on `PATH`. DOGME fills template placeholders without Jinja2. Enable Docker or Singularity/Apptainer in the Nextflow configuration; without a container runtime, the tasks cannot access these image-provided dependencies. Seqspec artifacts are published beside the generated FASTQ under `${fastqDir}`, while splitcode outputs are published under `${fastqDir}/single-cell`.
 
 `singleCell` defaults to `false`, and splitcode runs only for `readType = 'CDNA'` with `singleCell = true`. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
+
+### Single-cell H5AD outputs
+
+For `readType = 'CDNA'` with `singleCell = true`, DOGME also creates two sparse AnnData files for each genome under `${kallistoDir}/${genome}/single-cell/${sample}_${genome}`:
+
+- `${sample}_${genome}.gene.h5ad` contains cell-by-gene raw counts from the gene-collapsed `bustools count` output.
+- `${sample}_${genome}.transcript.h5ad` contains cell-by-transcript raw counts from a second `bustools count` output using an identity transcript-to-transcript map.
+
+Both files use cells as observations and genes or transcripts as variables. Corrected cell barcodes are stored in `obs_names`, feature identifiers are stored in `var_names`, and per-cell/per-feature total counts and detected-feature counts are included. Transcript H5AD files also include `var['gene_id']` when a transcript-to-gene mapping is available. DOGME records the sample, genome, read type, feature type, and `singleCellEntity` value in `uns['dogme']`. Counts remain raw sparse integer counts; DOGME does not normalize, filter, cluster, or infer whether observations are cells or nuclei.
+
+H5AD creation is enabled by default. To skip it while retaining the existing kallisto/bustools outputs, set `singleCellH5ad = false`. The execution image must provide the packages listed in `requirements-h5ad.txt`: `anndata`, `h5py`, `numpy`, `pandas`, and `scipy`. Dorado-demultiplexed bulk outputs are not converted to cell-level H5AD files because that path does not currently retain per-cell UMI/barcode processing.
+
+Example:
+
+```python
+import anndata
+
+gene_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39/sample_mm39.gene.h5ad')
+transcript_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39/sample_mm39.transcript.h5ad')
+```
 
 ---
 

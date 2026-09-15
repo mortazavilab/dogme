@@ -554,6 +554,35 @@ process singleCellKallistoTask {
     path "${params.sample}_${genomeName}"
     publishDir "${params.kallistoDir}/${genomeName}/single-cell", mode: 'copy'
     script:
+    def h5adCommands = params.singleCellH5ad ? """
+    awk 'NF {print \$1 "\\t" \$1}' "\${output_dir}/transcripts.txt" > "\${output_dir}/transcript_identity.t2g"
+    bustools count "\${output_dir}/sorted.bus" \\
+        -t "\${output_dir}/transcripts.txt" \\
+        -e "\${output_dir}/matrix.ec" \\
+        -o "\${output_dir}/transcript_count" --cm -m \\
+        -g "\${output_dir}/transcript_identity.t2g"
+    python ${projectDir}/scripts/make_h5ad.py \\
+        --matrix "\${output_dir}/count.mtx" \\
+        --barcodes "\${output_dir}/count.barcodes.txt" \\
+        --features "\${output_dir}/count.genes.txt" \\
+        --output "\${output_dir}/${params.sample}_${genomeName}.gene.h5ad" \\
+        --feature-type gene \\
+        --sample "${params.sample}" \\
+        --genome "${genomeName}" \\
+        --read-type "${params.readType}" \\
+        --entity "${params.singleCellEntity}"
+    python ${projectDir}/scripts/make_h5ad.py \\
+        --matrix "\${output_dir}/transcript_count.mtx" \\
+        --barcodes "\${output_dir}/transcript_count.barcodes.txt" \\
+        --features "\${output_dir}/transcript_count.genes.txt" \\
+        --output "\${output_dir}/${params.sample}_${genomeName}.transcript.h5ad" \\
+        --feature-type transcript \\
+        --sample "${params.sample}" \\
+        --genome "${genomeName}" \\
+        --read-type "${params.readType}" \\
+        --entity "${params.singleCellEntity}" \\
+        --t2g "${t2gFile}"
+    """ : ''
     """
     . ${params.scriptEnv}
     output_dir="${params.sample}_${genomeName}"
@@ -570,6 +599,7 @@ process singleCellKallistoTask {
         -t "\${output_dir}/transcripts.txt" \\
         -e "\${output_dir}/matrix.ec" \\
         -o "\${output_dir}/count" --cm -m -g ${t2gFile}
+    ${h5adCommands}
     """
 }
 
