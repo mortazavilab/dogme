@@ -550,39 +550,12 @@ process singleCellKallistoTask {
     tag "${genomeName} single-cell"
     input:
     tuple path(cDNAFile), path(umiFile), path(barcodeFile), path(indexFile), path(t2gFile), val(genomeName)
+    path h5adScript
     output:
-    path "${params.sample}_${genomeName}"
+    path "${params.sample}_${genomeName}", emit: results
+    path "${params.sample}_${genomeName}.single_cell_qc.tsv", optional: true, emit: qc
     publishDir "${params.kallistoDir}/${genomeName}/single-cell", mode: 'copy'
     script:
-    def h5adCommands = params.singleCellH5ad ? """
-    awk 'NF {print \$1 "\\t" \$1}' "\${output_dir}/transcripts.txt" > "\${output_dir}/transcript_identity.t2g"
-    bustools count "\${output_dir}/sorted.bus" \\
-        -t "\${output_dir}/transcripts.txt" \\
-        -e "\${output_dir}/matrix.ec" \\
-        -o "\${output_dir}/transcript_count" --cm -m \\
-        -g "\${output_dir}/transcript_identity.t2g"
-    python ${projectDir}/scripts/make_h5ad.py \\
-        --matrix "\${output_dir}/count.mtx" \\
-        --barcodes "\${output_dir}/count.barcodes.txt" \\
-        --features "\${output_dir}/count.genes.txt" \\
-        --output "\${output_dir}/${params.sample}_${genomeName}.gene.h5ad" \\
-        --feature-type gene \\
-        --sample "${params.sample}" \\
-        --genome "${genomeName}" \\
-        --read-type "${params.readType}" \\
-        --entity "${params.singleCellEntity}"
-    python ${projectDir}/scripts/make_h5ad.py \\
-        --matrix "\${output_dir}/transcript_count.mtx" \\
-        --barcodes "\${output_dir}/transcript_count.barcodes.txt" \\
-        --features "\${output_dir}/transcript_count.genes.txt" \\
-        --output "\${output_dir}/${params.sample}_${genomeName}.transcript.h5ad" \\
-        --feature-type transcript \\
-        --sample "${params.sample}" \\
-        --genome "${genomeName}" \\
-        --read-type "${params.readType}" \\
-        --entity "${params.singleCellEntity}" \\
-        --t2g "${t2gFile}"
-    """ : ''
     """
     . ${params.scriptEnv}
     output_dir="${params.sample}_${genomeName}"
@@ -595,11 +568,48 @@ process singleCellKallistoTask {
         -o "\${output_dir}/corrected.bus" "\${output_dir}/output.bus"
     bustools sort -t ${task.cpus} "\${output_dir}/corrected.bus" \\
         -o "\${output_dir}/sorted.bus"
+    # Collapse transcripts with the supplied t2g map for gene-level counts.
+    # --genecounts writes feature labels required by make_h5ad.py.
     bustools count "\${output_dir}/sorted.bus" \\
         -t "\${output_dir}/transcripts.txt" \\
         -e "\${output_dir}/matrix.ec" \\
-        -o "\${output_dir}/count" --cm -m -g ${t2gFile}
-    ${h5adCommands}
+        -o "\${output_dir}/count" --cm -m --genecounts -g ${t2gFile}
+    if [[ "${params.singleCellH5ad}" == "true" ]]; then
+        # Map each transcript to itself to retain transcript-level features.
+        awk 'NF {print \$1 "\\t" \$1}' "\${output_dir}/transcripts.txt" > "\${output_dir}/transcript_identity.t2g"
+        bustools count "\${output_dir}/sorted.bus" \\
+            -t "\${output_dir}/transcripts.txt" \\
+            -e "\${output_dir}/matrix.ec" \\
+            -o "\${output_dir}/transcript_count" --cm -m --genecounts \\
+            -g "\${output_dir}/transcript_identity.t2g"
+        # Write sparse cell-by-feature AnnData files for gene and transcript counts.
+        python ${h5adScript} \\
+            --matrix "\${output_dir}/count.mtx" \\
+            --barcodes "\${output_dir}/count.barcodes.txt" \\
+            --features "\${output_dir}/count.genes.txt" \\
+            --output "\${output_dir}/${params.sample}_${genomeName}.gene.h5ad" \\
+            --feature-type gene \\
+            --sample "${params.sample}" \\
+            --genome "${genomeName}" \\
+            --read-type "${params.readType}" \\
+            --entity "${params.singleCellEntity}"
+        python ${h5adScript} \\
+            --matrix "\${output_dir}/transcript_count.mtx" \\
+            --barcodes "\${output_dir}/transcript_count.barcodes.txt" \\
+            --features "\${output_dir}/transcript_count.genes.txt" \\
+            --output "\${output_dir}/${params.sample}_${genomeName}.transcript.h5ad" \\
+            --feature-type transcript \\
+            --sample "${params.sample}" \\
+            --genome "${genomeName}" \\
+            --read-type "${params.readType}" \\
+            --entity "${params.singleCellEntity}" \\
+            --t2g "${t2gFile}"
+            # Summarize both H5AD dimensions and gene-level raw UMI totals per barcode.
+            python ${h5adScript} \\
+                --gene-h5ad "\${output_dir}/${params.sample}_${genomeName}.gene.h5ad" \\
+                --transcript-h5ad "\${output_dir}/${params.sample}_${genomeName}.transcript.h5ad" \\
+                --qc-output "${params.sample}_${genomeName}.single_cell_qc.tsv"
+    fi
     """
 }
 
@@ -967,7 +977,10 @@ workflow kallistoWorkflow {
                 .map { cDNA, umi, barcode, genomeName, idx, t2g ->
                     tuple(cDNA, umi, barcode, idx, t2g, genomeName)
                 }
-            terminalKallisto = singleCellKallistoTask(singleCellInput)
+            terminalKallisto = singleCellKallistoTask(
+                singleCellInput,
+                file("${projectDir}/scripts/make_h5ad.py"),
+            )
         } else {
             kallistoInput = fastqFile.combine(indexFiles)
                 .map { fastq, genomeName, idx, t2g -> tuple(fastq, idx, t2g, genomeName) }
@@ -978,7 +991,10 @@ workflow kallistoWorkflow {
             singleCellInput = splitcodeTask.out.fastqs.map { cDNA, umi, barcode ->
                 tuple(cDNA, umi, barcode, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
             }
-            terminalKallisto = singleCellKallistoTask(singleCellInput)
+            terminalKallisto = singleCellKallistoTask(
+                singleCellInput,
+                file("${projectDir}/scripts/make_h5ad.py"),
+            )
         } else {
             kallistoInput = fastqFile.map { fastq ->
                 tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
@@ -988,7 +1004,7 @@ workflow kallistoWorkflow {
     }
 
     emit:
-    completion = terminalKallisto.collect().combine(seqspecFile.collect())
+    completion = terminalKallisto.results.collect().combine(seqspecFile.collect())
 }
 
 workflow kallistoFastqWorkflow {

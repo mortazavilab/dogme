@@ -8,17 +8,25 @@ def test_single_cell_kallisto_writes_gene_and_transcript_h5ad():
     nextflow = (ROOT / "nanoporeModule.nf").read_text()
     process = nextflow.split("process singleCellKallistoTask", 1)[1].split("process makeKallistoRefsTask", 1)[0]
 
-    assert "params.singleCellH5ad ?" in process
+    assert 'if [[ "${params.singleCellH5ad}" == "true" ]]; then' in process
+    assert "path h5adScript" in process
+    assert "python ${h5adScript}" in process
     assert 'bustools count "\\${output_dir}/sorted.bus"' in process
-    assert '-o "\\${output_dir}/count" --cm -m -g ${t2gFile}' in process
+    assert '-o "\\${output_dir}/count" --cm -m --genecounts -g ${t2gFile}' in process
     assert 'transcript_identity.t2g' in process
-    assert '-o "\\${output_dir}/transcript_count" --cm -m \\' in process
+    assert '-o "\\${output_dir}/transcript_count" --cm -m --genecounts \\' in process
     assert '-g "\\${output_dir}/transcript_identity.t2g"' in process
     assert "--feature-type gene" in process
     assert "--feature-type transcript" in process
     assert '${params.sample}_${genomeName}.gene.h5ad' in process
     assert '${params.sample}_${genomeName}.transcript.h5ad' in process
+    assert '${params.sample}_${genomeName}.single_cell_qc.tsv' in process
+    assert "--gene-h5ad" in process
+    assert "--transcript-h5ad" in process
+    assert "--qc-output" in process
     assert '--t2g "${t2gFile}"' in process
+    assert 'file("${projectDir}/scripts/make_h5ad.py")' in nextflow
+    assert 'completion = terminalKallisto.results.collect().combine(seqspecFile.collect())' in nextflow
 
 
 def test_h5ad_parameters_are_defaulted_and_validated():

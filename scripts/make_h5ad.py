@@ -73,7 +73,7 @@ def convert_matrix(
     entity: str,
     t2g_path: Path | None = None,
 ) -> None:
-    """Convert a bustools feature-by-cell matrix into cell-by-feature AnnData."""
+    """Convert a bustools count matrix into cell-by-feature AnnData."""
     anndata, mmio, np, pd, sparse = _load_dependencies()
     for path in (matrix_path, barcode_path, feature_path):
         if not path.exists():
@@ -85,15 +85,19 @@ def convert_matrix(
 
     barcodes = _read_identifiers(barcode_path)
     features = _read_identifiers(feature_path)
-    feature_by_barcode = _as_integer_matrix(mmio.mmread(matrix_path), np, sparse)
-    expected_shape = (len(features), len(barcodes))
-    if feature_by_barcode.shape != expected_shape:
+    source_counts = _as_integer_matrix(mmio.mmread(matrix_path), np, sparse)
+    feature_by_barcode_shape = (len(features), len(barcodes))
+    barcode_by_feature_shape = (len(barcodes), len(features))
+    if source_counts.shape == feature_by_barcode_shape:
+        counts = source_counts.transpose().tocsr()
+    elif source_counts.shape == barcode_by_feature_shape:
+        counts = source_counts
+    else:
         raise ValueError(
-            f"Matrix shape {feature_by_barcode.shape} does not match "
-            f"{len(features)} features x {len(barcodes)} barcodes"
+            f"Matrix shape {source_counts.shape} does not match either "
+            f"{len(features)} features x {len(barcodes)} barcodes or "
+            f"{len(barcodes)} barcodes x {len(features)} features"
         )
-
-    counts = feature_by_barcode.transpose().tocsr()
     obs = pd.DataFrame(index=pd.Index(barcodes, name="barcode"))
     var = pd.DataFrame(index=pd.Index(features, name=feature_type))
     obs["total_counts"] = np.asarray(counts.sum(axis=1)).ravel().astype(np.int64)
@@ -129,23 +133,81 @@ def convert_matrix(
     adata.write_h5ad(output_path, compression="gzip")
 
 
+def write_qc(gene_h5ad_path: Path, transcript_h5ad_path: Path, output_path: Path) -> None:
+    """Write matrix dimensions and gene-level UMI barcode thresholds."""
+    anndata, _, np, _, _ = _load_dependencies()
+    for path in (gene_h5ad_path, transcript_h5ad_path):
+        if not path.exists():
+            raise FileNotFoundError(f"Required H5AD input does not exist: {path}")
+
+    gene_data = anndata.read_h5ad(gene_h5ad_path, backed="r")
+    transcript_data = anndata.read_h5ad(transcript_h5ad_path, backed="r")
+    try:
+        if "total_counts" not in gene_data.obs:
+            raise ValueError(f"Gene H5AD is missing obs['total_counts']: {gene_h5ad_path}")
+
+        umi_counts = np.asarray(gene_data.obs["total_counts"], dtype=np.int64)
+        metrics: list[tuple[str, int | str]] = [
+            ("gene_matrix_barcodes", gene_data.n_obs),
+            ("gene_matrix_features", gene_data.n_vars),
+            ("transcript_matrix_barcodes", transcript_data.n_obs),
+            ("transcript_matrix_features", transcript_data.n_vars),
+            ("barcode_umi_source", "gene_h5ad_obs_total_counts"),
+            ("barcodes_total", len(umi_counts)),
+        ]
+        for threshold in (100, 200, 300, 400, 500, 1000, 2000, 3000, 4000, 10000, 20000):
+            metrics.append((f"barcodes_with_gt_{threshold}_umi", int((umi_counts > threshold).sum())))
+    finally:
+        gene_data.file.close()
+        transcript_data.file.close()
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with output_path.open("w") as output:
+        output.write("metric\tvalue\n")
+        for metric, value in metrics:
+            output.write(f"{metric}\t{value}\n")
+
+
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("--matrix", type=Path, required=True)
-    parser.add_argument("--barcodes", type=Path, required=True)
-    parser.add_argument("--features", type=Path, required=True)
-    parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--feature-type", choices=("gene", "transcript"), required=True)
-    parser.add_argument("--sample", required=True)
-    parser.add_argument("--genome", required=True)
-    parser.add_argument("--read-type", required=True)
+    parser.add_argument("--matrix", type=Path)
+    parser.add_argument("--barcodes", type=Path)
+    parser.add_argument("--features", type=Path)
+    parser.add_argument("--output", type=Path)
+    parser.add_argument("--feature-type", choices=("gene", "transcript"))
+    parser.add_argument("--sample")
+    parser.add_argument("--genome")
+    parser.add_argument("--read-type")
     parser.add_argument("--entity", choices=("cell", "nucleus"), default="cell")
     parser.add_argument("--t2g", type=Path)
+    parser.add_argument("--gene-h5ad", type=Path)
+    parser.add_argument("--transcript-h5ad", type=Path)
+    parser.add_argument("--qc-output", type=Path)
     return parser
 
 
 def main() -> None:
     args = _build_parser().parse_args()
+    if args.qc_output is not None:
+        if args.gene_h5ad is None or args.transcript_h5ad is None:
+            raise ValueError("--qc-output requires --gene-h5ad and --transcript-h5ad")
+        write_qc(args.gene_h5ad, args.transcript_h5ad, args.qc_output)
+        return
+    if args.gene_h5ad is not None or args.transcript_h5ad is not None:
+        raise ValueError("--gene-h5ad and --transcript-h5ad require --qc-output")
+    required_arguments = {
+        "--matrix": args.matrix,
+        "--barcodes": args.barcodes,
+        "--features": args.features,
+        "--output": args.output,
+        "--feature-type": args.feature_type,
+        "--sample": args.sample,
+        "--genome": args.genome,
+        "--read-type": args.read_type,
+    }
+    missing = [name for name, value in required_arguments.items() if value is None]
+    if missing:
+        raise ValueError(f"H5AD conversion requires: {', '.join(missing)}")
     convert_matrix(
         matrix_path=args.matrix,
         barcode_path=args.barcodes,

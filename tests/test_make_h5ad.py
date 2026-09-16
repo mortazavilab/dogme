@@ -74,3 +74,62 @@ def test_matrix_dimensions_must_match_identifiers(tmp_path):
             entity="cell",
             t2g_path=t2g,
         )
+
+
+def test_barcode_by_feature_matrix_is_not_transposed_twice(tmp_path):
+    matrix, barcodes, features, t2g = write_inputs(tmp_path)
+    mmio.mmwrite(matrix, np.array([[1, 0, 3], [0, 2, 0]], dtype=np.int64))
+    output = tmp_path / "sample.transcript.h5ad"
+
+    make_h5ad.convert_matrix(
+        matrix_path=matrix,
+        barcode_path=barcodes,
+        feature_path=features,
+        output_path=output,
+        feature_type="transcript",
+        sample="sample",
+        genome="mm39",
+        read_type="CDNA",
+        entity="cell",
+        t2g_path=t2g,
+    )
+
+    adata = anndata.read_h5ad(output)
+    assert adata.shape == (2, 3)
+    np.testing.assert_array_equal(adata.X.toarray(), [[1, 0, 3], [0, 2, 0]])
+
+
+def test_qc_reports_h5ad_shapes_and_barcode_umi_thresholds(tmp_path):
+    matrix, barcodes, features, t2g = write_inputs(tmp_path)
+    mmio.mmwrite(matrix, np.array([[101, 0], [0, 2], [3, 0]], dtype=np.int64))
+    gene_h5ad = tmp_path / "sample.gene.h5ad"
+    transcript_h5ad = tmp_path / "sample.transcript.h5ad"
+    qc_output = tmp_path / "sample.single_cell_qc.tsv"
+
+    make_h5ad.convert_matrix(
+        matrix, barcodes, features, gene_h5ad, "gene", "sample", "mm39", "CDNA", "cell"
+    )
+    make_h5ad.convert_matrix(
+        matrix, barcodes, features, transcript_h5ad, "transcript", "sample", "mm39", "CDNA", "cell", t2g
+    )
+    make_h5ad.write_qc(gene_h5ad, transcript_h5ad, qc_output)
+
+    qc = dict(line.split("\t", 1) for line in qc_output.read_text().splitlines()[1:])
+    assert qc["gene_matrix_barcodes"] == "2"
+    assert qc["gene_matrix_features"] == "3"
+    assert qc["transcript_matrix_barcodes"] == "2"
+    assert qc["transcript_matrix_features"] == "3"
+    assert qc["barcodes_total"] == "2"
+    assert qc["barcodes_with_gt_100_umi"] == "1"
+    assert qc["barcodes_with_gt_200_umi"] == "0"
+
+
+def test_qc_cli_does_not_require_matrix_conversion_arguments():
+    args = make_h5ad._build_parser().parse_args([
+        "--gene-h5ad", "sample.gene.h5ad",
+        "--transcript-h5ad", "sample.transcript.h5ad",
+        "--qc-output", "sample.single_cell_qc.tsv",
+    ])
+
+    assert args.gene_h5ad == Path("sample.gene.h5ad")
+    assert args.transcript_h5ad == Path("sample.transcript.h5ad")

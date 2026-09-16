@@ -4,7 +4,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## What's New in Dogme 1.4.1
+## What's New in Dogme 1.4.2
 
 - **End-to-end single-cell cDNA workflow:** With `readType = 'CDNA'` and `singleCell = true`, DOGME generates and validates seqspec metadata, splits and corrects cDNA/UMI/barcode FASTQs with splitcode, and runs single-cell kallisto/bustools quantification.
 - **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. Single-cell cDNA runs additionally generate a splitcode configuration and processed FASTQ.
@@ -38,7 +38,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   - Processes include retry/error strategies for robustness of long-running tasks.
 
 
-Dogme 1.4.1 carries forward the 1.3.3 workflow updates, including seqspec generation, single-cell cDNA splitting, and single-cell kallisto/bustools quantification.
+Dogme 1.4.2 carries forward the 1.3.3 workflow updates, including seqspec generation, single-cell cDNA splitting, and single-cell kallisto/bustools quantification.
 
 ---
 
@@ -281,7 +281,7 @@ For `readType = 'CDNA'` with `singleCell = true`, DOGME also creates two sparse 
 - `${sample}_${genome}.gene.h5ad` contains cell-by-gene raw counts from the gene-collapsed `bustools count` output.
 - `${sample}_${genome}.transcript.h5ad` contains cell-by-transcript raw counts from a second `bustools count` output using an identity transcript-to-transcript map.
 
-Both files use cells as observations and genes or transcripts as variables. Corrected cell barcodes are stored in `obs_names`, feature identifiers are stored in `var_names`, and per-cell/per-feature total counts and detected-feature counts are included. Transcript H5AD files also include `var['gene_id']` when a transcript-to-gene mapping is available. DOGME records the sample, genome, read type, feature type, and `singleCellEntity` value in `uns['dogme']`. Counts remain raw sparse integer counts; DOGME does not normalize, filter, cluster, or infer whether observations are cells or nuclei.
+Both files use cells as observations and genes or transcripts as variables. Corrected cell barcodes are stored in `obs_names`, feature identifiers are stored in `var_names`, and per-cell/per-feature total counts and detected-feature counts are included. Transcript H5AD files also include `var['gene_id']` when a transcript-to-gene mapping is available. DOGME records the sample, genome, read type, feature type, and `singleCellEntity` value in `uns['dogme']`. Counts remain raw sparse integer counts; DOGME does not normalize, filter, cluster, or infer whether observations are cells or nuclei. When H5AD generation is enabled, `${sample}_${genome}.single_cell_qc.tsv` is published beside the H5AD files with both matrix dimensions and barcode counts above raw gene-level UMI thresholds from 100 to 20,000.
 
 H5AD creation is enabled by default. To skip it while retaining the existing kallisto/bustools outputs, set `singleCellH5ad = false`. The execution image must provide the packages listed in `requirements-h5ad.txt`: `anndata`, `h5py`, `numpy`, `pandas`, and `scipy`. Dorado-demultiplexed bulk outputs are not converted to cell-level H5AD files because that path does not currently retain per-cell UMI/barcode processing.
 
