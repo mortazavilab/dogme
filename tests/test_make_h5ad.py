@@ -21,7 +21,7 @@ def write_inputs(tmp_path):
     features = tmp_path / "count.genes.txt"
     t2g = tmp_path / "reference.t2g"
     mmio.mmwrite(matrix, np.array([[1, 0], [0, 2], [3, 0]], dtype=np.int64))
-    barcodes.write_text("cell-a\ncell-b\n")
+    barcodes.write_text("ACGTACGTGGGGCCCCTTTTAAAA\nTGCATGCACCCCGGGGAAAATTTT\n")
     features.write_text("tx-1\ntx-2\ntx-3\n")
     t2g.write_text("tx-1\tgene-1\ntx-2\tgene-1\n")
     return matrix, barcodes, features, t2g
@@ -46,7 +46,8 @@ def test_transcript_h5ad_is_cell_by_transcript_with_metadata(tmp_path):
 
     adata = anndata.read_h5ad(output)
     assert adata.shape == (2, 3)
-    assert list(adata.obs_names) == ["cell-a", "cell-b"]
+    assert list(adata.obs_names) == ["ACGTACGTGGGGCCCCTTTTAAAA", "TGCATGCACCCCGGGGAAAATTTT"]
+    assert list(adata.obs["barcode_1"]) == ["ACGTACGT", "TGCATGCA"]
     assert list(adata.var_names) == ["tx-1", "tx-2", "tx-3"]
     np.testing.assert_array_equal(adata.X.toarray(), [[1, 0, 3], [0, 2, 0]])
     assert list(adata.var["gene_id"]) == ["gene-1", "gene-1", ""]

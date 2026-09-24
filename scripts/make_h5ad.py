@@ -99,6 +99,7 @@ def convert_matrix(
             f"{len(barcodes)} barcodes x {len(features)} features"
         )
     obs = pd.DataFrame(index=pd.Index(barcodes, name="barcode"))
+    obs["barcode_1"] = [barcode[:8] for barcode in barcodes]
     var = pd.DataFrame(index=pd.Index(features, name=feature_type))
     obs["total_counts"] = np.asarray(counts.sum(axis=1)).ravel().astype(np.int64)
     obs["n_features"] = np.asarray((counts > 0).sum(axis=1)).ravel().astype(np.int64)
