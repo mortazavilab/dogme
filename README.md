@@ -4,7 +4,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## What's New in Dogme 1.4.0
+## What's New in Dogme 1.4.2
 
 - **End-to-end single-cell cDNA workflow:** With `readType = 'CDNA'` and `singleCell = true`, DOGME generates and validates seqspec metadata, splits and corrects cDNA/UMI/barcode FASTQs with splitcode, and runs single-cell kallisto/bustools quantification.
 - **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. Single-cell cDNA runs additionally generate a splitcode configuration and processed FASTQ.
@@ -20,6 +20,8 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   Added a `kallisto` entry point that starts from unmapped BAMs, extracts FASTQ, and runs the kallisto long-read quantification steps without re-running basecalling or remapping.
 - **Single-cell kallisto/bustools quantification:**
   Added a `kb count`-equivalent workflow using kallisto and bustools alone, with long-read mode, technology string `2,0,24:1,0,10:0,0,0`, barcode whitelist correction, and support for precomputed or auto-built `k=63` indexes.
+- **Single-cell H5AD expression outputs:**
+  Single-cell cDNA runs now publish separate cell-by-gene and cell-by-transcript AnnData H5AD files from the kallisto/bustools count matrices.
 - **Automatic GTF-to-Junction BED Conversion:**  
   The pipeline now automatically converts GTF files to junction BED files for minimap2 spliced alignment, ensuring correct handling of RNA and cDNA mapping.
 - **Increased Maximum Intron Size:**  
@@ -36,7 +38,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   - Processes include retry/error strategies for robustness of long-running tasks.
 
 
-Dogme 1.4.0 carries forward the 1.3.3 workflow updates, including seqspec generation, single-cell cDNA splitting, and single-cell kallisto/bustools quantification.
+Dogme 1.4.2 carries forward the 1.3.3 workflow updates, including seqspec generation, single-cell cDNA splitting, and single-cell kallisto/bustools quantification.
 
 ---
 
@@ -51,7 +53,7 @@ The following Python scripts are included or updated in the scripts/ directory. 
   - Converts a GTF into a junction BED suitable for minimap2 spliced alignment. This is used automatically for RNA and CDNA mapping.
 
 - scripts/filterbed.py
-  - Filters modkit bed outputs by minimum coverage and per-mod thresholds (params.minCov and params.perMod), reading and writing compressed `.bed.gz` files for the BED workflow.
+  - Filters modkit bed outputs by minimum coverage and per-mod thresholds (params.minCov and params.perMod). The workflow writes the filtered result as sorted BGZF after this script completes.
 
 - scripts/annotateRNA.py
   - Annotates mapped BAMs with transcript information. Now outputs TALON-compatible outputs and expanded QC CSVs by default. Accepts a -CDNA flag for cDNA-specific behavior.
@@ -113,6 +115,8 @@ params {
 
     // Optional seqspec generation for FASTQs created by DOGME.
     singleCell = false
+    singleCellH5ad = true
+    singleCellEntity = 'cell' // or 'nucleus'; metadata only, not inferred
     singleCellKit = null
     seqspecTemplate = null
     seqspecVariables = null
@@ -183,7 +187,15 @@ Running Dogme on typical dataset can take more than 24 hours, therefore it is re
  ```
 nextflow run mortazavilab/dogme -c yourconfig.conf
 ```
-By default, the pipeline will create several folders within the launch directory such as bams, bedMethyl, fastqs, and kallisto - all of which can be customized in the config file. The `bedMethyl` directory stores compressed `.bed.gz` outputs for the raw modkit BEDs, filtered BEDs, and final per-modification BEDs. If you need to resume your work add '-resume' to the nextflow command after deleting the html report and trace files.
+By default, the pipeline will create several folders within the launch directory such as bams, bedMethyl, fastqs, and kallisto - all of which can be customized in the config file. The `bedMethyl` directory stores coordinate-sorted BGZF `.bed.gz` outputs for the raw modkit BEDs, filtered BEDs, and final per-modification BEDs. Each published BED has a matching `.bed.gz.tbi` tabix index. The final consolidated open-chromatin BEDs are also sorted, BGZF-compressed, and indexed under `openChromatin`. Existing plain-gzip `.bed.gz` files must be regenerated before they can be queried with tabix. If you need to resume your work add '-resume' to the nextflow command after deleting the html report and trace files.
+
+FASTQs extracted from BAMs and the final single-cell barcode FASTQ use multithreaded BGZF compression with the CPUs allocated to their Nextflow task. Their `.fastq.gz` names and gzip-compatible contents are unchanged.
+
+Indexed BEDs can be queried by genomic interval with tabix, for example:
+
+```
+tabix bedMethyl/sample.mm39.m6A.filtered.bed.gz chr1:100000-101000
+```
 
 ---
 
@@ -262,6 +274,26 @@ The renderer and splitcode task run inside `ghcr.io/mortazavilab/dogme-pipeline:
 
 `singleCell` defaults to `false`, and splitcode runs only for `readType = 'CDNA'` with `singleCell = true`. A pre-rendered external spec may be supplied with `params.seqspec` for workflows that consume existing FASTQs.
 
+### Single-cell H5AD outputs
+
+For `readType = 'CDNA'` with `singleCell = true`, DOGME also creates two sparse AnnData files for each genome under `${kallistoDir}/${genome}/single-cell/${sample}_${genome}`:
+
+- `${sample}_${genome}.gene.h5ad` contains cell-by-gene raw counts from the gene-collapsed `bustools count` output.
+- `${sample}_${genome}.transcript.h5ad` contains cell-by-transcript raw counts from a second `bustools count` output using an identity transcript-to-transcript map.
+
+Both files use cells as observations and genes or transcripts as variables. Corrected cell barcodes are stored in `obs_names`, their first 8 bases (the `barcode-1` region) are also stored in `obs['barcode_1']`, feature identifiers are stored in `var_names`, and per-cell/per-feature total counts and detected-feature counts are included. Transcript H5AD files also include `var['gene_id']` when a transcript-to-gene mapping is available. DOGME records the sample, genome, read type, feature type, and `singleCellEntity` value in `uns['dogme']`. Counts remain raw sparse integer counts; DOGME does not normalize, filter, cluster, or infer whether observations are cells or nuclei. When H5AD generation is enabled, `${sample}_${genome}.single_cell_qc.tsv` is published beside the H5AD files with both matrix dimensions and barcode counts above raw gene-level UMI thresholds from 100 to 20,000.
+
+H5AD creation is enabled by default. To skip it while retaining the existing kallisto/bustools outputs, set `singleCellH5ad = false`. The execution image must provide the packages listed in `requirements-h5ad.txt`: `anndata`, `h5py`, `numpy`, `pandas`, and `scipy`. Dorado-demultiplexed bulk outputs are not converted to cell-level H5AD files because that path does not currently retain per-cell UMI/barcode processing.
+
+Example:
+
+```python
+import anndata
+
+gene_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39/sample_mm39.gene.h5ad')
+transcript_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39/sample_mm39.transcript.h5ad')
+```
+
 ---
 
 ## Example: Annotating BAMs
@@ -338,6 +370,6 @@ Two common modes:
   - Note: on Macs Docker behaves differently for GPU — GPUs are typically not available on macOS Docker; use a Linux/GPU host or Singularity on cluster for GPU tasks.
 
 Important notes:
-- If you run Dogme inside the container image above you do not need to install the listed tools on the host. If you choose not to use containers, you must install dorado, minimap2, samtools, modkit, kallisto, and bustools and ensure they are visible in the PATH (see dogme.profile).
+- If you run Dogme inside the container image above you do not need to install the listed tools on the host. If you choose not to use containers, you must install dorado, minimap2, samtools, modkit, bgzip, tabix, kallisto, and bustools and ensure they are visible in the PATH (see dogme.profile).
 - Ensure any large shared storage mountpoints used by the pipeline (e.g. /path/to/your/data1, /path/to/your/data2) are bound into the container with `containerOptions` so the container can read/write data.
 - GPU-enabled steps (dorado / modkit GPU) require adding `--nv` for Singularity or `--gpus` for Docker and a host with GPUs + appropriate drivers.

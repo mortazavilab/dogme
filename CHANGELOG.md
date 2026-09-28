@@ -4,6 +4,22 @@ All notable DOGME changes are documented here.
 
 ## [Unreleased]
 
+## [1.4.2] - 2026-09-16
+
+### Added
+
+- Added optional H5AD generation for `CDNA` single-cell runs, publishing separate sparse cell-by-gene and cell-by-transcript AnnData files per genome; transcript counts use an identity transcript map so features remain individual transcripts rather than compatibility classes.
+- Added `singleCellH5ad` and `singleCellEntity` parameters, with raw count, barcode, feature, QC, transcript-to-gene, and pipeline metadata in the generated H5AD files.
+- Added `${sample}_${genome}.single_cell_qc.tsv` beside single-cell H5AD outputs, reporting gene and transcript matrix shapes plus barcode counts above configured raw gene-level UMI thresholds.
+- Added `requirements-h5ad.txt` documenting the Python packages required by the execution image.
+
+### Fixed
+
+- Generate feature-indexed Bustools matrices for H5AD conversion and accept either supported Matrix Market orientation while always writing cell-by-feature AnnData matrices.
+- Track the H5AD conversion script as a Nextflow task input so updates invalidate cached single-cell quantification tasks when resuming a run.
+
+## [1.4.1] - 2026-08-27
+
 ### Added
 
 - Added optional Dorado barcode demultiplexing through the `kitName` parameter. When configured, DOGME publishes classified BAMs with `${sample}.bcNN` names and keeps unclassified/no-barcode BAMs as publish-only outputs.
@@ -14,6 +30,10 @@ All notable DOGME changes are documented here.
 
 ### Fixed
 
+- Use multithreaded BGZF compression for FASTQs extracted from BAMs and final single-cell barcode FASTQs.
+- Replace plain gzip BED compression with coordinate-sorted multithreaded BGZF compression and tabix indexes for published modkit and final open-chromatin BED outputs.
+- Ensure the `remap` entry point regenerates SeqSpec and reruns Splitcode for single-cell cDNA inputs from unmapped BAMs.
+- Make remap FASTQ extraction consume the discovered BAM input, while preserving support for the existing `${sample}.unmapped.bam` naming convention.
 - Correct Parse Evercode WT Mega v2 Nanopore single-cell extraction geometry: recover the 10-base UMI and ordered 24-base barcode from the TruSeq-R2 reverse-complement side, trim poly(T)/TSO technical sequence, and emit normalized cDNA for forward and reverse-complement reads.
 - Make splitcode FASTQ combining skip absent orientation streams, exclude ambiguous read IDs before writing, preserve barcode quality orientation, and publish `${sample}_splitcode_qc.tsv` with input, empty, ambiguous, missing-orientation, and emitted-triplet counts.
 - Preserve splitcode's configured one-mismatch linker tolerance (`1:1:1`) instead of applying an exact-anchor filter to unclassified reads.
