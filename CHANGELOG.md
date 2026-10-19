@@ -4,6 +4,12 @@ All notable DOGME changes are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Added default-on kallisto genome BAM generation for RNA and cDNA workflows, including single-cell splitcode FASTQs and demultiplexed samples.
+- Published sorted and indexed `${sample}.${genome}.kallisto.bam` files in the configured BAM directory.
+- Added per-genome prebuilt kallisto `index` and `t2g` reference fields, with backward-compatible global reference fallback.
+
 ## [1.4.2] - 2026-09-16
 
 ### Added
