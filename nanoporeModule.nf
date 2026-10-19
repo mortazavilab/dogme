@@ -722,6 +722,7 @@ workflow genomeBamWorkflow {
     fastq_ch
 
     main:
+    def completion = Channel.empty()
     if (params.genomeBam && genomeBamReferencesAvailable()) {
         def configuredRefs = params.genome_annot_refs.withIndex().collect { ref, refIndex ->
             def indexPath = ref.index ?: (refIndex == 0 ? params.kallistoIndex : null)
@@ -763,7 +764,11 @@ workflow genomeBamWorkflow {
                 tuple(fastq, indexFile, genomeFasta, genomeGtf, genomeName, sampleName)
             }
         genomeBamTask(directInputs.mix(autoInputs))
+        completion = genomeBamTask.out.bams.collect()
     }
+
+    emit:
+    completion = completion
 }
 
 // The splitmodification task generates bed files for each DNA modification. 
@@ -1058,7 +1063,7 @@ workflow kallistoWorkflow {
     genomeBamInput = (params.readType == 'CDNA' && singleCellEnabled)
         ? splitcodeTask.out.fastqs.map { cDNA, umi, barcode -> tuple(cDNA, params.sample) }
         : fastqFile.map { fastq -> tuple(fastq, params.sample) }
-    genomeBamWorkflow(genomeBamInput)
+    genomeBamResults = genomeBamWorkflow(genomeBamInput)
 
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
@@ -1097,7 +1102,9 @@ workflow kallistoWorkflow {
     }
 
     emit:
-    completion = terminalKallisto.results.collect().combine(seqspecFile.collect())
+    completion = terminalKallisto.results.collect()
+        .combine(seqspecFile.collect())
+        .combine(genomeBamResults.completion)
 }
 
 workflow kallistoFastqWorkflow {
@@ -1107,7 +1114,7 @@ workflow kallistoFastqWorkflow {
     main:
     fastqFile = fastq_ch
     genomeBamInput = fastqFile.map { fastq -> tuple(fastq, params.sample) }
-    genomeBamWorkflow(genomeBamInput)
+    genomeBamResults = genomeBamWorkflow(genomeBamInput)
 
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
@@ -1125,7 +1132,7 @@ workflow kallistoFastqWorkflow {
     }
 
     emit:
-    completion = terminalKallisto.collect()
+    completion = terminalKallisto.collect().combine(genomeBamResults.completion)
 }
 
 workflow demuxKallistoWorkflow {
@@ -1134,7 +1141,7 @@ workflow demuxKallistoWorkflow {
 
     main:
     genomeBamInput = fastq_ch.map { fastq, sampleName -> tuple(fastq, sampleName) }
-    genomeBamWorkflow(genomeBamInput)
+    genomeBamResults = genomeBamWorkflow(genomeBamInput)
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
             .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
@@ -1153,7 +1160,7 @@ workflow demuxKallistoWorkflow {
     }
 
     emit:
-    completion = terminalKallisto.collect()
+    completion = terminalKallisto.collect().combine(genomeBamResults.completion)
 }
 
 workflow mainWorkflow {

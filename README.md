@@ -99,8 +99,10 @@ runs. DOGME runs kallisto in ONT long-read mode with `--genomebam`, derives the
 chromosome sizes from the configured genome FASTA (creating a FASTA index with
 `samtools faidx` when needed), and publishes sorted/indexed
 `${params.sample}.${genome}.kallisto.bam` and `.bai` files under `${bamDir}`.
-Set `genomeBam = false` to disable these additional outputs. The existing
-minimap2 BAMs and kallisto count outputs are unchanged.
+This also applies when starting from existing unmapped BAMs with the `remap`
+entry point. Genome BAM generation completes as part of that workflow. Set
+`genomeBam = false` to disable these additional outputs. The existing minimap2
+BAMs and kallisto count outputs are unchanged.
 
 ---
 

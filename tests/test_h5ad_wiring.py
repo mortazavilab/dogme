@@ -26,7 +26,7 @@ def test_single_cell_kallisto_writes_gene_and_transcript_h5ad():
     assert "--qc-output" in process
     assert '--t2g "${t2gFile}"' in process
     assert 'file("${projectDir}/scripts/make_h5ad.py")' in nextflow
-    assert 'completion = terminalKallisto.results.collect().combine(seqspecFile.collect())' in nextflow
+    assert '.combine(seqspecFile.collect())' in nextflow
 
 
 def test_h5ad_parameters_are_defaulted_and_validated():
@@ -63,3 +63,15 @@ def test_genome_bam_generation_is_wired_and_published():
     assert "ref.t2g ?: (refIndex == 0 ? params.t2g : null)" in nextflow
     assert "params.genomeBam" in dogme
     assert "!bam.name.endsWith('.kallisto.bam')" in dogme
+
+
+def test_remap_waits_for_genome_bam_generation():
+    nextflow = (ROOT / "nanoporeModule.nf").read_text()
+    remap_workflow = nextflow.split("workflow remapWorkflow", 1)[1].split("workflow fastqCDNAWorkflow", 1)[0]
+    kallisto_workflow = nextflow.split("workflow kallistoWorkflow", 1)[1].split("workflow kallistoFastqWorkflow", 1)[0]
+    genome_bam_workflow = nextflow.split("workflow genomeBamWorkflow", 1)[1].split("// The splitmodification", 1)[0]
+
+    assert "kallistoResults = kallistoWorkflow(unmappedbam)" in remap_workflow
+    assert "genomeBamResults = genomeBamWorkflow(genomeBamInput)" in kallisto_workflow
+    assert ".combine(genomeBamResults.completion)" in kallisto_workflow
+    assert "completion = genomeBamTask.out.bams.collect()" in genome_bam_workflow
