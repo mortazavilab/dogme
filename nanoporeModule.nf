@@ -10,6 +10,20 @@ def isSingleCellEnabled() {
     params.singleCell instanceof Boolean ? params.singleCell : params.singleCell?.toString()?.toBoolean()
 }
 
+def genomeBamReferencesAvailable() {
+    def refs = params.genome_annot_refs instanceof List ? params.genome_annot_refs : []
+    def invalidRef = refs.find { ref ->
+        !ref.genome || !ref.annot ||
+            !new File(ref.genome.toString()).isFile() ||
+            !new File(ref.annot.toString()).isFile()
+    }
+    if (invalidRef) {
+        log.warn("Disabling genome BAM generation: FASTA or GTF is unavailable for genome '${invalidRef.name ?: 'unknown'}'.")
+        return false
+    }
+    return !refs.isEmpty()
+}
+
 process softwareVTask {
     input:
     val version
@@ -659,6 +673,32 @@ process kallistoTask {
     """
 }
 
+process genomeBamTask {
+    tag "${sampleName}.${genomeName} genome BAM"
+    input:
+    tuple path(inputFile), path(indexFile), path(genomeFasta), path(genomeGtf), val(genomeName), val(sampleName)
+    output:
+    path "${sampleName}.${genomeName}.kallisto.bam", emit: bams
+    path "${sampleName}.${genomeName}.kallisto.bam.bai", emit: indexes
+    publishDir params.bamDir, mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    fasta_index="\${genomeFasta}.fai"
+    if [[ ! -f "\${fasta_index}" ]]; then
+        samtools faidx "${genomeFasta}"
+    fi
+    awk 'BEGIN { OFS="\\t" } { print \$1, \$2 }' "\${fasta_index}" > chromosomes.txt
+    output_dir="${sampleName}.${genomeName}.kallisto"
+    kallisto quant --long -P ONT --genomebam \\
+        --gtf "${genomeGtf}" --chromosomes chromosomes.txt \\
+        -i "${indexFile}" -t ${task.cpus} -o "\${output_dir}" "${inputFile}"
+    samtools sort -@ ${task.cpus} -o "${sampleName}.${genomeName}.kallisto.bam" \\
+        "\${output_dir}/pseudoalignments.bam"
+    samtools index -@ ${task.cpus} "${sampleName}.${genomeName}.kallisto.bam"
+    """
+}
+
 process demuxKallistoTask {
     tag "${sampleName}.${genomeName}"
     input:
@@ -675,6 +715,55 @@ process demuxKallistoTask {
     bustools count ${sampleName}_${genomeName}/sorted.bus -t ${sampleName}_${genomeName}/transcripts.txt -e ${sampleName}_${genomeName}/matrix.ec -o ${sampleName}_${genomeName}/count --cm -m -g ${t2gFile}
     kallisto quant-tcc -t ${task.cpus} --long -P ONT ${sampleName}_${genomeName}/count.mtx -i ${indexFile} -f ${sampleName}_${genomeName}/flens.txt -e ${sampleName}_${genomeName}/count.ec.txt -o ${sampleName}_${genomeName}
     """
+}
+
+workflow genomeBamWorkflow {
+    take:
+    fastq_ch
+
+    main:
+    if (params.genomeBam && genomeBamReferencesAvailable()) {
+        def configuredRefs = params.genome_annot_refs.withIndex().collect { ref, refIndex ->
+            def indexPath = ref.index ?: (refIndex == 0 ? params.kallistoIndex : null)
+            def t2gPath = ref.t2g ?: (refIndex == 0 ? params.t2g : null)
+            [name: ref.name, genome: ref.genome, annot: ref.annot, index: indexPath, t2g: t2gPath]
+        }
+        def referenceRefs = nextflow.Channel.fromList(configuredRefs)
+            .map { ref -> tuple(ref.name, ref.genome, ref.annot, ref.index, ref.t2g) }
+
+        directRefs = referenceRefs
+            .filter { genomeName, genomeFasta, genomeGtf, indexFile, t2gFile -> indexFile && t2gFile }
+            .map { genomeName, genomeFasta, genomeGtf, indexFile, t2gFile ->
+                tuple(genomeName, file(indexFile), file(genomeFasta), file(genomeGtf))
+            }
+
+        autoRefs = referenceRefs
+            .filter { genomeName, genomeFasta, genomeGtf, indexFile, t2gFile -> !indexFile || !t2gFile }
+        autoRefInputs = autoRefs.map { genomeName, genomeFasta, genomeGtf, indexFile, t2gFile ->
+            tuple(genomeName, genomeFasta, genomeGtf)
+        }
+        autoRefFiles = makeKallistoRefsTask(autoRefInputs)
+        autoIndexes = kallistoIndexTask(autoRefFiles)
+        autoRefsWithFiles = autoIndexes
+            .combine(autoRefs.map { genomeName, genomeFasta, genomeGtf, indexFile, t2gFile ->
+                tuple(genomeName, genomeGtf)
+            }, by: 0)
+            .map { genomeName, indexFile, t2gFile, genomeFasta, refName, genomeGtf ->
+                tuple(genomeName, indexFile, genomeFasta, file(genomeGtf))
+            }
+
+        directInputs = fastq_ch
+            .combine(directRefs)
+            .map { fastq, sampleName, genomeName, indexFile, genomeFasta, genomeGtf ->
+                tuple(fastq, indexFile, genomeFasta, genomeGtf, genomeName, sampleName)
+            }
+        autoInputs = fastq_ch
+            .combine(autoRefsWithFiles)
+            .map { fastq, sampleName, genomeName, indexFile, genomeFasta, genomeGtf ->
+                tuple(fastq, indexFile, genomeFasta, genomeGtf, genomeName, sampleName)
+            }
+        genomeBamTask(directInputs.mix(autoInputs))
+    }
 }
 
 // The splitmodification task generates bed files for each DNA modification. 
@@ -966,6 +1055,10 @@ workflow kallistoWorkflow {
             .map { fastq, spec -> tuple(spec, fastq) }
         splitcodeTask(splitcodeInput)
     }
+    genomeBamInput = (params.readType == 'CDNA' && singleCellEnabled)
+        ? splitcodeTask.out.fastqs.map { cDNA, umi, barcode -> tuple(cDNA, params.sample) }
+        : fastqFile.map { fastq -> tuple(fastq, params.sample) }
+    genomeBamWorkflow(genomeBamInput)
 
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
@@ -1013,6 +1106,8 @@ workflow kallistoFastqWorkflow {
 
     main:
     fastqFile = fastq_ch
+    genomeBamInput = fastqFile.map { fastq -> tuple(fastq, params.sample) }
+    genomeBamWorkflow(genomeBamInput)
 
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
@@ -1038,6 +1133,8 @@ workflow demuxKallistoWorkflow {
     fastq_ch
 
     main:
+    genomeBamInput = fastq_ch.map { fastq, sampleName -> tuple(fastq, sampleName) }
+    genomeBamWorkflow(genomeBamInput)
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
             .map { ref -> tuple(ref.name, ref.genome, ref.annot) }

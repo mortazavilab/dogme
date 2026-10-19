@@ -94,6 +94,14 @@ Prerequisites include installing nextflow, using java/17 or better, installing m
 By default, nextflow will use the launchdirectory as the place to create its workfolder.
 You can either provide pre-built kallisto index and t2g files in your config, or set `kallistoIndex` and `t2g` to `null` to have the pipeline auto-build them from the genome and GTF files in your `genome_annot_refs`. When auto-building, the pipeline will generate a kallisto index and t2g for each genome entry and run quantification against each one.
 
+Genome BAM generation is enabled by default with `genomeBam = true` for RNA and CDNA
+runs. DOGME runs kallisto in ONT long-read mode with `--genomebam`, derives the
+chromosome sizes from the configured genome FASTA (creating a FASTA index with
+`samtools faidx` when needed), and publishes sorted/indexed
+`${params.sample}.${genome}.kallisto.bam` and `.bai` files under `${bamDir}`.
+Set `genomeBam = false` to disable these additional outputs. The existing
+minimap2 BAMs and kallisto count outputs are unchanged.
+
 ---
 
 ## Create your own config file using the template
@@ -115,6 +123,7 @@ params {
 
     // Optional seqspec generation for FASTQs created by DOGME.
     singleCell = false
+    genomeBam = true
     singleCellH5ad = true
     singleCellEntity = 'cell' // or 'nucleus'; metadata only, not inferred
     singleCellKit = null
@@ -135,6 +144,12 @@ params {
      [name: 'C57BL_6J_T2T_v1', genome: '/path/genomeRef/C57BL_6J_T2T_v1/unmasked.fa', annot: '/path/genomeRef/C57BL_6J_T2T_v1/genes.gtf'],
      [name: 'CAST_EiJ_T2T_v1', genome: '/path/genomeRef/CAST_EiJ_T2T_v1/unmasked.fa', annot: '/path/genomeRef/CAST_EiJ_T2T_v1/genes.gtf']
      ]
+    // Optional per-genome kallisto references. These take precedence over the
+    // global kallistoIndex/t2g values.
+    // genome_annot_refs = [
+    //   [name: 'mm39', genome: '/path/genome.fa', annot: '/path/genes.gtf',
+    //    index: '/path/mm39.idx', t2g: '/path/mm39.t2g']
+    // ]
     kallistoIndex = '/path/kallistoref/mm39GencM36_k63.idx'
     t2g = '/pathA/kallistoref/mm39GencM36_k63.t2g'
     // Or set both to null to auto-build from genome_annot_refs:
@@ -315,6 +330,7 @@ nextflow run mortazavilab/dogme -entry kallisto -c yourconfig.conf
 ```
 
 This will look for `*.unmapped.bam` files in `params.bamDir` and write kallisto outputs without re-running basecalling or remapping.
+It also writes kallisto genome BAMs to `params.bamDir` when `genomeBam` is enabled.
 
 ## Example: Running fastqCDNA From an Existing CDNA FASTQ
 

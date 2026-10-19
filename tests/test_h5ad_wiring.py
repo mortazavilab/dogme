@@ -43,3 +43,23 @@ def test_h5ad_runtime_requirements_are_declared():
 
     for package in ("anndata", "h5py", "numpy", "pandas", "scipy"):
         assert package in requirements
+
+
+def test_genome_bam_generation_is_wired_and_published():
+    nextflow = (ROOT / "nanoporeModule.nf").read_text()
+    dogme = (ROOT / "dogme.nf").read_text()
+
+    process = nextflow.split("process genomeBamTask", 1)[1].split("process demuxKallistoTask", 1)[0]
+    assert "kallisto quant --long -P ONT --genomebam" in process
+    assert "--gtf" in process
+    assert "--chromosomes chromosomes.txt" in process
+    assert 'path "${sampleName}.${genomeName}.kallisto.bam"' in process
+    assert 'path "${sampleName}.${genomeName}.kallisto.bam.bai"' in process
+    assert "publishDir params.bamDir" in process
+    assert "samtools faidx" in process
+    assert "workflow genomeBamWorkflow" in nextflow
+    assert "genomeBamReferencesAvailable" in nextflow
+    assert "ref.index ?: (refIndex == 0 ? params.kallistoIndex : null)" in nextflow
+    assert "ref.t2g ?: (refIndex == 0 ? params.t2g : null)" in nextflow
+    assert "params.genomeBam" in dogme
+    assert "!bam.name.endsWith('.kallisto.bam')" in dogme

@@ -24,6 +24,7 @@ def dogmeVersion = "1.4.2"
 def defaultModDir = "${launchDir}/doradoModels"
 
 params.singleCell = params.containsKey('singleCell') ? params.singleCell : false
+params.genomeBam = params.containsKey('genomeBam') ? params.genomeBam : true
 params.singleCellKit = params.containsKey('singleCellKit') ? params.singleCellKit : null
 params.seqspec = params.containsKey('seqspec') ? params.seqspec : null
 params.seqspecTemplate = params.containsKey('seqspecTemplate') ? params.seqspecTemplate : null
@@ -36,6 +37,10 @@ params.keepBarcodes = (params.keepBarcodes == null || params.keepBarcodes.toStri
 
 if (!(params.singleCellH5ad instanceof Boolean)) {
     throw new IllegalArgumentException("singleCellH5ad must be true or false")
+}
+
+if (!(params.genomeBam instanceof Boolean)) {
+    throw new IllegalArgumentException("genomeBam must be true or false")
 }
 
 if (!(params.singleCellEntity in ['cell', 'nucleus'])) {
@@ -108,6 +113,7 @@ workflow modkit {
     // 4. Map the results to the tuple format expected by analysisWorkflow.
     mappedBams = Channel.fromPath("${params.bamDir}/*.bam")
                          .filter { bam -> !bam.name.contains('unmapped') }
+                         .filter { bam -> !bam.name.endsWith('.kallisto.bam') }
                          .filter { bam -> file(bam.toString() + '.bai').exists() }
                          .map { bam ->
                              def bai = file(bam.toString() + '.bai')
@@ -127,6 +133,7 @@ workflow annotateRNA {
     // 4. Map the results to the tuple format expected by annotateRNAWorkflow.
     mappedBams = Channel.fromPath("${params.bamDir}/*.bam")
         .filter { bam -> !bam.name.contains('unmapped') }
+        .filter { bam -> !bam.name.endsWith('.kallisto.bam') }
         .filter { bam -> file(bam.toString() + '.bai').exists() }
         .map { bam ->
             def bai = file(bam.toString() + '.bai')
