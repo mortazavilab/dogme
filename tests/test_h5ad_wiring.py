@@ -11,6 +11,12 @@ def test_single_cell_kallisto_writes_gene_and_transcript_h5ad():
     assert 'if [[ "${params.singleCellH5ad}" == "true" ]]; then' in process
     assert "path h5adScript" in process
     assert "python ${h5adScript}" in process
+    assert 'path "${params.sample}.${genomeName}.kallisto.bam", optional: true, emit: bams' in process
+    assert "kallisto bus --long --threshold 0.8" in process
+    assert "--genomebam --gtf '${genomeGtf}' --chromosomes chromosomes.txt" in process
+    assert 'fasta_index="${genomeFasta}.fai"' in process
+    assert 'samtools sort -@ ${task.cpus} -o "${params.sample}.${genomeName}.kallisto.bam"' in process
+    assert 'publishDir params.bamDir, pattern: "*.kallisto.bam*", mode: \'copy\', overwrite: true' in process
     assert 'bustools count "\\${output_dir}/sorted.bus"' in process
     assert '-o "\\${output_dir}/count" --cm -m --genecounts -g ${t2gFile}' in process
     assert 'transcript_identity.t2g' in process
@@ -32,7 +38,8 @@ def test_single_cell_kallisto_writes_gene_and_transcript_h5ad():
 def test_h5ad_parameters_are_defaulted_and_validated():
     nextflow = (ROOT / "dogme.nf").read_text()
 
-    assert "params.singleCellH5ad = params.containsKey('singleCellH5ad') ? params.singleCellH5ad : true" in nextflow
+    assert "def optionalParam(String name, defaultValue = null)" in nextflow
+    assert "params.singleCellH5ad = optionalParam('singleCellH5ad', true)" in nextflow
     assert "params.singleCellEntity" in nextflow
     assert "singleCellH5ad must be true or false" in nextflow
     assert "singleCellEntity must be either 'cell' or 'nucleus'" in nextflow
@@ -43,6 +50,14 @@ def test_h5ad_runtime_requirements_are_declared():
 
     for package in ("anndata", "h5py", "numpy", "pandas", "scipy"):
         assert package in requirements
+
+
+def test_seqspec_optional_parameters_are_guarded():
+    nextflow = (ROOT / "nanoporeModule.nf").read_text()
+
+    assert "optionalParam('seqspecMd5', true)" in nextflow
+    assert "optionalParam('seqspecTemplate')" in nextflow
+    assert "optionalParam('seqspecVariables')" in nextflow
 
 
 def test_genome_bam_generation_is_wired_and_published():
@@ -57,10 +72,12 @@ def test_genome_bam_generation_is_wired_and_published():
     assert 'path "${sampleName}.${genomeName}.kallisto.bam.bai"' in process
     assert "publishDir params.bamDir" in process
     assert "samtools faidx" in process
+    assert 'fasta_index="${genomeFasta}.fai"' in process
+    assert 'fasta_index="\\${genomeFasta}.fai"' not in process
     assert "workflow genomeBamWorkflow" in nextflow
     assert "genomeBamReferencesAvailable" in nextflow
-    assert "ref.index ?: (refIndex == 0 ? params.kallistoIndex : null)" in nextflow
-    assert "ref.t2g ?: (refIndex == 0 ? params.t2g : null)" in nextflow
+    assert "ref.index ?: (refIndex == 0 ? optionalParam('kallistoIndex') : null)" in nextflow
+    assert "ref.t2g ?: (refIndex == 0 ? optionalParam('t2g') : null)" in nextflow
     assert "params.genomeBam" in dogme
     assert "!bam.name.endsWith('.kallisto.bam')" in dogme
 
@@ -72,6 +89,8 @@ def test_remap_waits_for_genome_bam_generation():
     genome_bam_workflow = nextflow.split("workflow genomeBamWorkflow", 1)[1].split("// The splitmodification", 1)[0]
 
     assert "kallistoResults = kallistoWorkflow(unmappedbam)" in remap_workflow
-    assert "genomeBamResults = genomeBamWorkflow(genomeBamInput)" in kallisto_workflow
-    assert ".combine(genomeBamResults.completion)" in kallisto_workflow
-    assert "completion = genomeBamTask.out.bams.collect()" in genome_bam_workflow
+    assert "terminalKallisto.bams.collect()" in kallisto_workflow
+    assert "genomeBamWorkflow(fastqFile.map { fastq -> tuple(fastq, params.sample) }).completion" in kallisto_workflow
+    assert "def terminalKallistoCompletion" in kallisto_workflow
+    assert "genomeBamCompletion = genomeBamTask.out.bams.collect()" in genome_bam_workflow
+    assert "completion = genomeBamCompletion" in genome_bam_workflow

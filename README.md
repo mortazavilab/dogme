@@ -79,7 +79,7 @@ The current version of Dogme has been tested on SLURM clusters and on Macs with 
 | samtools | 1.15.1  |
 | minimap2 | 2.28    |
 | mod_kit  | 0.5     |
-| kallisto | 0.51.1  |
+| kallisto | 0.52.0 |
 | bustools | 0.43.2  |
 
 You must first install dorado, minimap2, samtools, modkit, kallisto, and bustools, and the latest version of nextflow and add their paths to the dogme.profile file in the launch directory or create an empty file of the same name. 
@@ -99,6 +99,9 @@ runs. DOGME runs kallisto in ONT long-read mode with `--genomebam`, derives the
 chromosome sizes from the configured genome FASTA (creating a FASTA index with
 `samtools faidx` when needed), and publishes sorted/indexed
 `${params.sample}.${genome}.kallisto.bam` and `.bai` files under `${bamDir}`.
+This requires kallisto 0.52.0 or newer. For single-cell cDNA runs, DOGME adds
+`--genomebam` to the existing `kallisto bus` command, producing the BUS
+quantification and genome BAM in one kallisto invocation.
 This also applies when starting from existing unmapped BAMs with the `remap`
 entry point. Genome BAM generation completes as part of that workflow. Set
 `genomeBam = false` to disable these additional outputs. The existing minimap2

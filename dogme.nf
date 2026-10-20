@@ -11,6 +11,10 @@ include { annotateRNAWorkflow } from './nanoporeModule'
 include { kallistoWorkflow } from './nanoporeModule'
 include { fastqCDNAWorkflow } from './nanoporeModule'
 
+def optionalParam(String name, defaultValue = null) {
+    params.containsKey(name) ? params[name] : defaultValue
+}
+
 def getParamOrDefault(param, defaultValue) {
     if (param == null || param == 'null' || param == 'undefined' || !param) {
         return defaultValue
@@ -23,17 +27,20 @@ def getParamOrDefault(param, defaultValue) {
 def dogmeVersion = "1.4.2"
 def defaultModDir = "${launchDir}/doradoModels"
 
-params.singleCell = params.containsKey('singleCell') ? params.singleCell : false
-params.genomeBam = params.containsKey('genomeBam') ? params.genomeBam : true
-params.singleCellKit = params.containsKey('singleCellKit') ? params.singleCellKit : null
-params.seqspec = params.containsKey('seqspec') ? params.seqspec : null
-params.seqspecTemplate = params.containsKey('seqspecTemplate') ? params.seqspecTemplate : null
-params.seqspecVariables = params.containsKey('seqspecVariables') ? params.seqspecVariables : null
-params.seqspecMd5 = params.containsKey('seqspecMd5') ? params.seqspecMd5 : true
-params.singleCellH5ad = params.containsKey('singleCellH5ad') ? params.singleCellH5ad : true
-params.singleCellEntity = params.containsKey('singleCellEntity') && params.singleCellEntity ? params.singleCellEntity.toString().trim().toLowerCase() : 'cell'
-params.kitName = params.kitName == null ? null : params.kitName.toString().trim()
-params.keepBarcodes = (params.keepBarcodes == null || params.keepBarcodes.toString().trim() == '') ? null : params.keepBarcodes.toString().trim().toInteger()
+params.singleCell = optionalParam('singleCell', false)
+params.genomeBam = optionalParam('genomeBam', true)
+params.singleCellKit = optionalParam('singleCellKit')
+params.seqspec = optionalParam('seqspec')
+params.seqspecTemplate = optionalParam('seqspecTemplate')
+params.seqspecVariables = optionalParam('seqspecVariables')
+params.seqspecMd5 = optionalParam('seqspecMd5', true)
+params.singleCellH5ad = optionalParam('singleCellH5ad', true)
+def singleCellEntity = optionalParam('singleCellEntity')
+params.singleCellEntity = singleCellEntity ? singleCellEntity.toString().trim().toLowerCase() : 'cell'
+def kitName = optionalParam('kitName')
+params.kitName = kitName == null ? null : kitName.toString().trim()
+def keepBarcodes = optionalParam('keepBarcodes')
+params.keepBarcodes = (keepBarcodes == null || keepBarcodes.toString().trim() == '') ? null : keepBarcodes.toString().trim().toInteger()
 
 if (!(params.singleCellH5ad instanceof Boolean)) {
     throw new IllegalArgumentException("singleCellH5ad must be true or false")
@@ -62,30 +69,30 @@ def modificationsMap = [
 ]
 
 workflow {
-    modDir = getParamOrDefault(params.modDir, defaultModDir)
+    modDir = getParamOrDefault(optionalParam('modDir'), defaultModDir)
     params.modDir = modDir
 
-    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModifications = getParamOrDefault(optionalParam('modifications'), modificationsMap.get(params.readType, ''))
     theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
 
     results = mainWorkflow(dogmeVersion, theModel, modDir)
 }
 
 workflow basecall {
-    modDir = getParamOrDefault(params.modDir, defaultModDir)
+    modDir = getParamOrDefault(optionalParam('modDir'), defaultModDir)
     params.modDir = modDir
 
-    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModifications = getParamOrDefault(optionalParam('modifications'), modificationsMap.get(params.readType, ''))
     theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
 
     results = basecallWorkflow(dogmeVersion, theModel, modDir)
 }
 
 workflow remap {
-    modDir = getParamOrDefault(params.modDir, defaultModDir)
+    modDir = getParamOrDefault(optionalParam('modDir'), defaultModDir)
     params.modDir = modDir
 
-    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModifications = getParamOrDefault(optionalParam('modifications'), modificationsMap.get(params.readType, ''))
     theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
 
     results = remapWorkflow(dogmeVersion, theModel, modDir)
@@ -94,17 +101,17 @@ workflow remap {
 workflow fastqCDNA {
     params.readType = 'CDNA'
 
-    modDir = getParamOrDefault(params.modDir, defaultModDir)
+    modDir = getParamOrDefault(optionalParam('modDir'), defaultModDir)
     params.modDir = modDir
 
-    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModifications = getParamOrDefault(optionalParam('modifications'), modificationsMap.get(params.readType, ''))
     theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
 
     results = fastqCDNAWorkflow(dogmeVersion, theModel, modDir)
 }
 
 workflow modkit {
-    theModifications = getParamOrDefault(params.modifications, modificationsMap.get(params.readType, ''))
+    theModifications = getParamOrDefault(optionalParam('modifications'), modificationsMap.get(params.readType, ''))
     theModel = params.accuracy + (theModifications ? ",${theModifications}" : "")
 
     // 1. Create a channel from all BAM files in the specified directory.

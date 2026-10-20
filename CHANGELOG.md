@@ -11,6 +11,12 @@ All notable DOGME changes are documented here.
 - Added per-genome prebuilt kallisto `index` and `t2g` reference fields, with backward-compatible global reference fallback.
 - Ensure the `remap` entry point waits for genome BAM generation to complete.
 
+### Fixed
+
+- Suppress undefined-parameter warnings when optional genome BAM, barcode demultiplexing, modification, and SeqSpec settings are omitted.
+- Generate single-cell cDNA genome BAMs within the existing kallisto BUS task, avoiding a duplicate kallisto run and duplicate automatic index construction.
+- Overwrite published kallisto BAM indexes on resumed or repeated runs so they remain synchronized with their BAM files.
+
 ## [1.4.2] - 2026-09-16
 
 ### Added

@@ -6,8 +6,13 @@ nextflow.enable.dsl=2
 include { openChromatinTask as openChromatinTaskBg } from './modkitModule'
 include { openChromatinTask as openChromatinTaskBed } from './modkitModule'
 
+def optionalParam(String name, defaultValue = null) {
+    params.containsKey(name) ? params[name] : defaultValue
+}
+
 def isSingleCellEnabled() {
-    params.singleCell instanceof Boolean ? params.singleCell : params.singleCell?.toString()?.toBoolean()
+    def singleCell = optionalParam('singleCell', false)
+    singleCell instanceof Boolean ? singleCell : singleCell?.toString()?.toBoolean()
 }
 
 def genomeBamReferencesAvailable() {
@@ -73,7 +78,8 @@ process doradoTask {
     path "${inputFile.simpleName}.bam"
     publishDir params.dorDir, mode: 'copy'
     script:
-    def kitNameArg = params.kitName ? "--kit-name ${params.kitName}" : ''
+    def kitName = optionalParam('kitName')
+    def kitNameArg = kitName ? "--kit-name ${kitName}" : ''
     """
     . ${params.scriptEnv}
     mkdir -p ${params.dorDir}
@@ -117,7 +123,7 @@ process demuxSummaryTask {
     path "${params.sample}.demux_summary.tsv"
     publishDir params.topDir, mode: 'copy'
     script:
-    def keepCount = params.keepBarcodes ?: 0
+    def keepCount = optionalParam('keepBarcodes', 0) ?: 0
     """
     . ${params.scriptEnv}
     : > raw_counts.tsv
@@ -164,12 +170,13 @@ process demuxSummaryTask {
 }
 
 process selectTopDemuxBamsTask {
-    tag "top ${params.keepBarcodes} barcodes"
+    tag "top ${optionalParam('keepBarcodes')} barcodes"
     input:
     path inputBams
     output:
     path "selected/*.bam", emit: selected_bams
     script:
+    def keepCount = optionalParam('keepBarcodes')
     """
     . ${params.scriptEnv}
     : > read_counts.tsv
@@ -183,7 +190,7 @@ process selectTopDemuxBamsTask {
 
     awk -F '\\t' '{ counts[\$1] += \$2 } END { for (barcode in counts) print barcode "\\t" counts[barcode] }' read_counts.tsv \
         | sort -k2,2nr -k1,1n \
-        | head -n ${params.keepBarcodes} \
+        | head -n ${keepCount} \
         | cut -f1 > selected_barcodes.txt
 
     mkdir selected
@@ -464,10 +471,13 @@ process demuxGenerateSeqspecTask {
     script:
     def outputSpec = "${sampleName}.seqspec.yaml"
     def singleCellEnabled = isSingleCellEnabled()
-    def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
-    def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
-    def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
-    def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
+    def singleCellKit = optionalParam('singleCellKit')
+    def seqspecTemplate = optionalParam('seqspecTemplate')
+    def seqspecVariables = optionalParam('seqspecVariables')
+    def singleCellKitArg = singleCellKit ? "--single-cell-kit ${singleCellKit}" : ''
+    def seqspecMd5Enabled = optionalParam('seqspecMd5', true)
+    def seqspecTemplateArg = seqspecTemplate ? "--template ${seqspecTemplate}" : ''
+    def seqspecVariablesArg = seqspecVariables ? "--variables ${seqspecVariables}" : ''
     """
     . ${params.scriptEnv}
     python ${scripts}/generate_seqspec.py \
@@ -496,10 +506,13 @@ process generateSeqspecTask {
     script:
     def outputSpec = "${params.sample}.seqspec.yaml"
     def singleCellEnabled = isSingleCellEnabled()
-    def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
-    def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
-    def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
-    def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
+    def singleCellKit = optionalParam('singleCellKit')
+    def seqspecTemplate = optionalParam('seqspecTemplate')
+    def seqspecVariables = optionalParam('seqspecVariables')
+    def singleCellKitArg = singleCellKit ? "--single-cell-kit ${singleCellKit}" : ''
+    def seqspecMd5Enabled = optionalParam('seqspecMd5', true)
+    def seqspecTemplateArg = seqspecTemplate ? "--template ${seqspecTemplate}" : ''
+    def seqspecVariablesArg = seqspecVariables ? "--variables ${seqspecVariables}" : ''
     """
     . ${params.scriptEnv}
     python ${scripts}/generate_seqspec.py \
@@ -563,20 +576,37 @@ process splitcodeTask {
 process singleCellKallistoTask {
     tag "${genomeName} single-cell"
     input:
-    tuple path(cDNAFile), path(umiFile), path(barcodeFile), path(indexFile), path(t2gFile), val(genomeName)
+    tuple path(cDNAFile), path(umiFile), path(barcodeFile), path(indexFile), path(t2gFile), path(genomeFasta), path(genomeGtf), val(genomeName)
     path h5adScript
     output:
     path "${params.sample}_${genomeName}", emit: results
     path "${params.sample}_${genomeName}.single_cell_qc.tsv", optional: true, emit: qc
+    path "${params.sample}.${genomeName}.kallisto.bam", optional: true, emit: bams
+    path "${params.sample}.${genomeName}.kallisto.bam.bai", optional: true, emit: indexes
     publishDir "${params.kallistoDir}/${genomeName}/single-cell", mode: 'copy'
+    publishDir params.bamDir, pattern: "*.kallisto.bam*", mode: 'copy', overwrite: true
     script:
+    def generateGenomeBam = optionalParam('genomeBam', true) && genomeBamReferencesAvailable()
+    def genomeBamArgs = generateGenomeBam ? "--genomebam --gtf '${genomeGtf}' --chromosomes chromosomes.txt" : ''
     """
     . ${params.scriptEnv}
     output_dir="${params.sample}_${genomeName}"
     mkdir -p "\${output_dir}"
+    if ${generateGenomeBam}; then
+        fasta_index="${genomeFasta}.fai"
+        if [[ ! -f "\${fasta_index}" ]]; then
+            samtools faidx "${genomeFasta}"
+        fi
+        awk 'BEGIN { OFS="\\t" } { print \$1, \$2 }' "\${fasta_index}" > chromosomes.txt
+    fi
     kallisto bus --long --threshold 0.8 -x '2,0,24:1,0,10:0,0,0' \\
-        -i ${indexFile} -t ${task.cpus} -o "\${output_dir}" \\
+        -i ${indexFile} -t ${task.cpus} ${genomeBamArgs} -o "\${output_dir}" \\
         "${cDNAFile}" "${umiFile}" "${barcodeFile}"
+    if ${generateGenomeBam}; then
+        samtools sort -@ ${task.cpus} -o "${params.sample}.${genomeName}.kallisto.bam" \\
+            "\${output_dir}/pseudoalignments.bam"
+        samtools index -@ ${task.cpus} "${params.sample}.${genomeName}.kallisto.bam"
+    fi
     bustools whitelist -o "\${output_dir}/whitelist.txt" "\${output_dir}/output.bus"
     bustools correct -w "\${output_dir}/whitelist.txt" \\
         -o "\${output_dir}/corrected.bus" "\${output_dir}/output.bus"
@@ -680,11 +710,11 @@ process genomeBamTask {
     output:
     path "${sampleName}.${genomeName}.kallisto.bam", emit: bams
     path "${sampleName}.${genomeName}.kallisto.bam.bai", emit: indexes
-    publishDir params.bamDir, mode: 'copy'
+    publishDir params.bamDir, mode: 'copy', overwrite: true
     script:
     """
     . ${params.scriptEnv}
-    fasta_index="\${genomeFasta}.fai"
+    fasta_index="${genomeFasta}.fai"
     if [[ ! -f "\${fasta_index}" ]]; then
         samtools faidx "${genomeFasta}"
     fi
@@ -722,11 +752,11 @@ workflow genomeBamWorkflow {
     fastq_ch
 
     main:
-    def completion = Channel.empty()
-    if (params.genomeBam && genomeBamReferencesAvailable()) {
+    def genomeBamCompletion = Channel.of(true)
+    if (optionalParam('genomeBam', true) && genomeBamReferencesAvailable()) {
         def configuredRefs = params.genome_annot_refs.withIndex().collect { ref, refIndex ->
-            def indexPath = ref.index ?: (refIndex == 0 ? params.kallistoIndex : null)
-            def t2gPath = ref.t2g ?: (refIndex == 0 ? params.t2g : null)
+            def indexPath = ref.index ?: (refIndex == 0 ? optionalParam('kallistoIndex') : null)
+            def t2gPath = ref.t2g ?: (refIndex == 0 ? optionalParam('t2g') : null)
             [name: ref.name, genome: ref.genome, annot: ref.annot, index: indexPath, t2g: t2gPath]
         }
         def referenceRefs = nextflow.Channel.fromList(configuredRefs)
@@ -764,11 +794,11 @@ workflow genomeBamWorkflow {
                 tuple(fastq, indexFile, genomeFasta, genomeGtf, genomeName, sampleName)
             }
         genomeBamTask(directInputs.mix(autoInputs))
-        completion = genomeBamTask.out.bams.collect()
+            genomeBamCompletion = genomeBamTask.out.bams.collect()
     }
 
     emit:
-    completion = completion
+    completion = genomeBamCompletion
 }
 
 // The splitmodification task generates bed files for each DNA modification. 
@@ -1047,6 +1077,8 @@ workflow kallistoWorkflow {
 
     main:
     def singleCellEnabled = isSingleCellEnabled()
+    def kallistoIndex = optionalParam('kallistoIndex')
+    def prebuiltT2g = optionalParam('t2g')
     fastqFile = extractfastqTask(unmapped_bams_ch)
 
     seqspecFile = generateSeqspecTask(
@@ -1060,20 +1092,18 @@ workflow kallistoWorkflow {
             .map { fastq, spec -> tuple(spec, fastq) }
         splitcodeTask(splitcodeInput)
     }
-    genomeBamInput = (params.readType == 'CDNA' && singleCellEnabled)
-        ? splitcodeTask.out.fastqs.map { cDNA, umi, barcode -> tuple(cDNA, params.sample) }
-        : fastqFile.map { fastq -> tuple(fastq, params.sample) }
-    genomeBamResults = genomeBamWorkflow(genomeBamInput)
-
-    if (!params.kallistoIndex || !params.t2g) {
+    if (!kallistoIndex || !prebuiltT2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
             .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
         refFiles = makeKallistoRefsTask(kallisto_refs_ch)
         indexFiles = kallistoIndexTask(refFiles)
         if (params.readType == 'CDNA' && singleCellEnabled) {
-            singleCellInput = splitcodeTask.out.fastqs.combine(indexFiles)
-                .map { cDNA, umi, barcode, genomeName, idx, t2g ->
-                    tuple(cDNA, umi, barcode, idx, t2g, genomeName)
+            def genomeRefs = nextflow.Channel.fromList(params.genome_annot_refs)
+                .map { ref -> tuple(ref.name, file(ref.genome), file(ref.annot)) }
+            singleCellIndexFiles = indexFiles.combine(genomeRefs, by: 0)
+            singleCellInput = splitcodeTask.out.fastqs.combine(singleCellIndexFiles)
+                .map { cDNA, umi, barcode, genomeName, idx, t2gFile, genomeFasta, genomeGtf ->
+                    tuple(cDNA, umi, barcode, idx, t2gFile, genomeFasta, genomeGtf, genomeName)
                 }
             terminalKallisto = singleCellKallistoTask(
                 singleCellInput,
@@ -1086,8 +1116,9 @@ workflow kallistoWorkflow {
         }
     } else {
         if (params.readType == 'CDNA' && singleCellEnabled) {
+            def genomeRef = params.genome_annot_refs[0]
             singleCellInput = splitcodeTask.out.fastqs.map { cDNA, umi, barcode ->
-                tuple(cDNA, umi, barcode, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+                tuple(cDNA, umi, barcode, file(kallistoIndex), file(prebuiltT2g), file(genomeRef.genome), file(genomeRef.annot), genomeRef.name)
             }
             terminalKallisto = singleCellKallistoTask(
                 singleCellInput,
@@ -1095,16 +1126,23 @@ workflow kallistoWorkflow {
             )
         } else {
             kallistoInput = fastqFile.map { fastq ->
-                tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+                tuple(fastq, file(kallistoIndex), file(prebuiltT2g), 'prebuilt')
             }
             terminalKallisto = kallistoTask(kallistoInput)
         }
     }
 
+    def terminalKallistoCompletion = (params.readType == 'CDNA' && singleCellEnabled)
+        ? terminalKallisto.results.collect()
+        : terminalKallisto.collect()
+    def genomeBamCompletion = (params.readType == 'CDNA' && singleCellEnabled)
+        ? terminalKallisto.bams.collect()
+        : genomeBamWorkflow(fastqFile.map { fastq -> tuple(fastq, params.sample) }).completion
+
     emit:
-    completion = terminalKallisto.results.collect()
+    completion = terminalKallistoCompletion
         .combine(seqspecFile.collect())
-        .combine(genomeBamResults.completion)
+        .combine(genomeBamCompletion)
 }
 
 workflow kallistoFastqWorkflow {
@@ -1185,7 +1223,7 @@ workflow mainWorkflow {
     def genome_annot_ch = nextflow.Channel.fromList(params.genome_annot_refs)
     def demuxAnnotationBams = Channel.empty()
     def analysisCompletions = Channel.empty()
-    if (params.kitName) {
+    if (optionalParam('kitName')) {
         demuxBamFiles = doradoDemuxTask(unmappedbam).demuxed_bams
             .flatten()
         demuxSummary = demuxSummaryTask(demuxBamFiles.collect())
@@ -1195,7 +1233,7 @@ workflow mainWorkflow {
                 def name = bam.simpleName.toLowerCase()
                 !name.contains('unclassified') && !name.contains('no_barcode')
             }
-        if (params.keepBarcodes != null) {
+        if (optionalParam('keepBarcodes') != null) {
             classifiedBams = selectTopDemuxBamsTask(classifiedBams.collect()).selected_bams
                 .flatten()
                 .map { bam -> tuple(bam, bam.baseName) }
@@ -1281,7 +1319,7 @@ workflow basecallWorkflow {
     bamFiles = doradoTask(pod5_files_ch, modelDirectory, modelPath, theModel).collectFile()
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
-    if (params.kitName) {
+    if (optionalParam('kitName')) {
         demuxedBams = doradoDemuxTask(unmappedbam)
         classifiedBams = demuxedBams.demuxed_bams
             .flatten()
