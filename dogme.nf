@@ -28,7 +28,6 @@ def dogmeVersion = "1.4.2"
 def defaultModDir = "${launchDir}/doradoModels"
 
 params.singleCell = optionalParam('singleCell', false)
-params.genomeBam = optionalParam('genomeBam', true)
 params.singleCellKit = optionalParam('singleCellKit')
 params.seqspec = optionalParam('seqspec')
 params.seqspecTemplate = optionalParam('seqspecTemplate')
@@ -44,10 +43,6 @@ params.keepBarcodes = (keepBarcodes == null || keepBarcodes.toString().trim() ==
 
 if (!(params.singleCellH5ad instanceof Boolean)) {
     throw new IllegalArgumentException("singleCellH5ad must be true or false")
-}
-
-if (!(params.genomeBam instanceof Boolean)) {
-    throw new IllegalArgumentException("genomeBam must be true or false")
 }
 
 if (!(params.singleCellEntity in ['cell', 'nucleus'])) {
@@ -153,7 +148,7 @@ workflow annotateRNA {
         }
 
 
-    annotateRNAWorkflow(mappedBams)
+    annotateRNAWorkflow(mappedBams, Channel.empty(), false)
 }
 
 workflow kallisto {

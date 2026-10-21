@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
-"""Convert a bustools Matrix Market count matrix to an AnnData H5AD file."""
+"""Build single-cell AnnData files from kallisto matrices or an annotated BAM."""
 
 from __future__ import annotations
 
 import argparse
+import re
+import sqlite3
+import tempfile
 from pathlib import Path
 
 
@@ -134,6 +137,254 @@ def convert_matrix(
     adata.write_h5ad(output_path, compression="gzip")
 
 
+def _parse_gtf_attributes(text: str) -> dict[str, str]:
+    return {
+        match.group(1): match.group(2)
+        for match in re.finditer(r'([^\s;]+)\s+"?([^";]+)"?\s*;?', text)
+    }
+
+
+def _read_gtf_feature_metadata(path: Path) -> tuple[dict[str, dict[str, str]], dict[str, dict[str, str]]]:
+    gene_metadata: dict[str, dict[str, str]] = {}
+    transcript_metadata: dict[str, dict[str, str]] = {}
+    with path.open() as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip() or line.startswith("#"):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) != 9:
+                raise ValueError(f"Invalid GTF row in {path} at line {line_number}")
+            attributes = _parse_gtf_attributes(fields[8])
+            gene_id = attributes.get("gene_id")
+            transcript_id = attributes.get("transcript_id")
+            if gene_id:
+                entry = gene_metadata.setdefault(gene_id, {})
+                for key, value in (
+                    ("gene_name", attributes.get("gene_name")),
+                    ("gene_type", attributes.get("gene_type") or attributes.get("gene_biotype")),
+                ):
+                    if value and key not in entry:
+                        entry[key] = value
+            if transcript_id:
+                entry = transcript_metadata.setdefault(transcript_id, {})
+                if gene_id and "gene_id" not in entry:
+                    entry["gene_id"] = gene_id
+                for key, value in (
+                    ("transcript_name", attributes.get("transcript_name")),
+                    (
+                        "transcript_type",
+                        attributes.get("transcript_type") or attributes.get("transcript_biotype"),
+                    ),
+                ):
+                    if value and key not in entry:
+                        entry[key] = value
+    if not gene_metadata and not transcript_metadata:
+        raise ValueError(f"No gene or transcript identifiers found in GTF: {path}")
+    return gene_metadata, transcript_metadata
+
+
+def _write_bam_count_h5ad(
+    db: sqlite3.Connection,
+    table: str,
+    features: list[str],
+    feature_metadata: dict[str, dict[str, str]],
+    output_path: Path,
+    feature_type: str,
+    sample: str,
+    genome: str,
+    entity: str,
+    bam_path: Path,
+    gtf_path: Path,
+    anndata,
+    np,
+    pd,
+    sparse,
+) -> None:
+    barcode_rows = db.execute(
+        f"SELECT DISTINCT cell FROM {table} ORDER BY cell"
+    ).fetchall()
+    barcodes = [row[0] for row in barcode_rows]
+    feature_index = {feature: index for index, feature in enumerate(features)}
+    barcode_index = {barcode: index for index, barcode in enumerate(barcodes)}
+
+    row_indices: list[int] = []
+    column_indices: list[int] = []
+    values: list[int] = []
+    query = f"SELECT cell, feature, COUNT(*) FROM {table} GROUP BY cell, feature"
+    for barcode, feature, count in db.execute(query):
+        row_indices.append(barcode_index[barcode])
+        column_indices.append(feature_index[feature])
+        values.append(count)
+    counts = sparse.csr_matrix(
+        (np.asarray(values, dtype=np.int64), (row_indices, column_indices)),
+        shape=(len(barcodes), len(features)),
+        dtype=np.int64,
+    )
+
+    obs = pd.DataFrame(index=pd.Index(barcodes, name="barcode"))
+    obs["barcode_1"] = [barcode[:8] for barcode in barcodes]
+    obs["total_counts"] = np.asarray(counts.sum(axis=1)).ravel().astype(np.int64)
+    obs["n_features"] = np.asarray((counts > 0).sum(axis=1)).ravel().astype(np.int64)
+    var = pd.DataFrame(index=pd.Index(features, name=feature_type))
+    var["total_counts"] = np.asarray(counts.sum(axis=0)).ravel().astype(np.int64)
+    var["n_cells"] = np.asarray((counts > 0).sum(axis=0)).ravel().astype(np.int64)
+
+    metadata_columns = (
+        ("gene_name", "gene_type")
+        if feature_type == "gene"
+        else ("gene_id", "transcript_name", "transcript_type")
+    )
+    for column in metadata_columns:
+        var[column] = [
+            feature_metadata.get(feature, {}).get(column, "") for feature in features
+        ]
+
+    metadata = {
+        "sample": sample,
+        "genome": genome,
+        "read_type": "CDNA",
+        "entity": entity,
+        "feature_type": feature_type,
+        "matrix_orientation": "cells_by_features",
+        "count_type": "unique_umi_counts",
+        "source_bam": bam_path.name,
+        "source_gtf": gtf_path.name,
+        "unmapped_feature_count": sum(feature not in feature_metadata for feature in features),
+    }
+    adata = anndata.AnnData(X=counts, obs=obs, var=var)
+    adata.uns["dogme"] = metadata
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    adata.write_h5ad(output_path, compression="gzip")
+
+
+def convert_annotated_bam(
+    bam_path: Path,
+    gtf_path: Path,
+    gene_output_path: Path,
+    transcript_output_path: Path,
+    sample: str,
+    genome: str,
+    entity: str,
+    qc_output_path: Path | None = None,
+) -> None:
+    """Create gene and transcript UMI matrices from annotation and cell/UMI BAM tags."""
+    anndata, _, np, pd, sparse = _load_dependencies()
+    try:
+        import pysam
+    except ImportError as exc:
+        raise RuntimeError("BAM H5AD generation requires pysam in the DOGME execution image.") from exc
+    if not bam_path.exists():
+        raise FileNotFoundError(f"Annotated BAM does not exist: {bam_path}")
+    if not gtf_path.exists():
+        raise FileNotFoundError(f"DOGME annotation GTF does not exist: {gtf_path}")
+    if entity not in {"cell", "nucleus"}:
+        raise ValueError("entity must be either 'cell' or 'nucleus'")
+
+    gene_metadata, transcript_metadata = _read_gtf_feature_metadata(gtf_path)
+    with tempfile.TemporaryDirectory(prefix="dogme_h5ad_") as temporary_directory:
+        db = sqlite3.connect(Path(temporary_directory) / "molecules.sqlite")
+        try:
+            db.execute(
+                "CREATE TABLE gene_molecules "
+                "(cell TEXT, feature TEXT, umi TEXT, PRIMARY KEY (cell, feature, umi))"
+            )
+            db.execute(
+                "CREATE TABLE transcript_molecules "
+                "(cell TEXT, feature TEXT, umi TEXT, PRIMARY KEY (cell, feature, umi))"
+            )
+            gene_insert = "INSERT OR IGNORE INTO gene_molecules VALUES (?, ?, ?)"
+            transcript_insert = "INSERT OR IGNORE INTO transcript_molecules VALUES (?, ?, ?)"
+            batch_size = 10000
+            gene_batch: list[tuple[str, str, str]] = []
+            transcript_batch: list[tuple[str, str, str]] = []
+            with pysam.AlignmentFile(str(bam_path), "rb") as bam:
+                for read in bam.fetch(until_eof=True):
+                    if read.is_unmapped or read.is_secondary or read.is_supplementary:
+                        continue
+                    if not read.has_tag("CB") or not read.has_tag("UB"):
+                        continue
+                    barcode = str(read.get_tag("CB"))
+                    umi = str(read.get_tag("UB"))
+                    if not barcode or not umi:
+                        continue
+                    if read.has_tag("GX"):
+                        gene_id = str(read.get_tag("GX"))
+                        if gene_id and gene_id != ".":
+                            gene_batch.append((barcode, gene_id, umi))
+                    if read.has_tag("TX"):
+                        transcript_id = str(read.get_tag("TX"))
+                        if transcript_id and transcript_id != ".":
+                            transcript_batch.append((barcode, transcript_id, umi))
+                    if len(gene_batch) >= batch_size:
+                        db.executemany(gene_insert, gene_batch)
+                        gene_batch.clear()
+                    if len(transcript_batch) >= batch_size:
+                        db.executemany(transcript_insert, transcript_batch)
+                        transcript_batch.clear()
+                db.executemany(gene_insert, gene_batch)
+                db.executemany(transcript_insert, transcript_batch)
+                db.commit()
+
+            gene_features = list(gene_metadata)
+            transcript_features = list(transcript_metadata)
+            gene_features.extend(
+                feature
+                for (feature,) in db.execute(
+                    "SELECT DISTINCT feature FROM gene_molecules ORDER BY feature"
+                )
+                if feature not in gene_metadata
+            )
+            transcript_features.extend(
+                feature
+                for (feature,) in db.execute(
+                    "SELECT DISTINCT feature FROM transcript_molecules ORDER BY feature"
+                )
+                if feature not in transcript_metadata
+            )
+            gene_features.sort()
+            transcript_features.sort()
+
+            _write_bam_count_h5ad(
+                db,
+                "gene_molecules",
+                gene_features,
+                gene_metadata,
+                gene_output_path,
+                "gene",
+                sample,
+                genome,
+                entity,
+                bam_path,
+                gtf_path,
+                anndata,
+                np,
+                pd,
+                sparse,
+            )
+            _write_bam_count_h5ad(
+                db,
+                "transcript_molecules",
+                transcript_features,
+                transcript_metadata,
+                transcript_output_path,
+                "transcript",
+                sample,
+                genome,
+                entity,
+                bam_path,
+                gtf_path,
+                anndata,
+                np,
+                pd,
+                sparse,
+            )
+        finally:
+            db.close()
+
+    if qc_output_path is not None:
+        write_qc(gene_output_path, transcript_output_path, qc_output_path)
+
+
 def write_qc(gene_h5ad_path: Path, transcript_h5ad_path: Path, output_path: Path) -> None:
     """Write matrix dimensions and gene-level UMI barcode thresholds."""
     anndata, _, np, _, _ = _load_dependencies()
@@ -181,6 +432,10 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--read-type")
     parser.add_argument("--entity", choices=("cell", "nucleus"), default="cell")
     parser.add_argument("--t2g", type=Path)
+    parser.add_argument("--bam", type=Path)
+    parser.add_argument("--gtf", type=Path)
+    parser.add_argument("--gene-output", type=Path)
+    parser.add_argument("--transcript-output", type=Path)
     parser.add_argument("--gene-h5ad", type=Path)
     parser.add_argument("--transcript-h5ad", type=Path)
     parser.add_argument("--qc-output", type=Path)
@@ -189,6 +444,28 @@ def _build_parser() -> argparse.ArgumentParser:
 
 def main() -> None:
     args = _build_parser().parse_args()
+    if args.bam is not None:
+        required_arguments = {
+            "--gtf": args.gtf,
+            "--gene-output": args.gene_output,
+            "--transcript-output": args.transcript_output,
+            "--sample": args.sample,
+            "--genome": args.genome,
+        }
+        missing = [name for name, value in required_arguments.items() if value is None]
+        if missing:
+            raise ValueError(f"BAM H5AD conversion requires: {', '.join(missing)}")
+        convert_annotated_bam(
+            bam_path=args.bam,
+            gtf_path=args.gtf,
+            gene_output_path=args.gene_output,
+            transcript_output_path=args.transcript_output,
+            sample=args.sample,
+            genome=args.genome,
+            entity=args.entity,
+            qc_output_path=args.qc_output,
+        )
+        return
     if args.qc_output is not None:
         if args.gene_h5ad is None or args.transcript_h5ad is None:
             raise ValueError("--qc-output requires --gene-h5ad and --transcript-h5ad")

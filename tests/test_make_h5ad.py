@@ -134,3 +134,72 @@ def test_qc_cli_does_not_require_matrix_conversion_arguments():
 
     assert args.gene_h5ad == Path("sample.gene.h5ad")
     assert args.transcript_h5ad == Path("sample.transcript.h5ad")
+
+
+def test_annotated_bam_h5ad_includes_novel_tags_and_deduplicates_umis(tmp_path):
+    pysam = pytest.importorskip("pysam")
+    bam_path = tmp_path / "sample.annotated.single_cell.bam"
+    gtf_path = tmp_path / "sample_dogme.gtf"
+    gene_output = tmp_path / "sample_mm39.gene.h5ad"
+    transcript_output = tmp_path / "sample_mm39.transcript.h5ad"
+    qc_output = tmp_path / "sample_mm39.single_cell_qc.tsv"
+    gtf_path.write_text(
+        'chr1\ttest\texon\t1\t10\t.\t+\t.\tgene_id "gene-known"; '
+        'transcript_id "tx-known"; gene_name "Known"; gene_type "protein_coding"; '
+        'transcript_name "Known transcript"; transcript_type "protein_coding";\n'
+        'chr1\ttest\texon\t20\t30\t.\t+\t.\tgene_id "gene-unused"; '
+        'transcript_id "tx-unused"; gene_name "Unused"; gene_type "lncRNA"; '
+        'transcript_name "Unused transcript"; transcript_type "lncRNA";\n'
+    )
+    header = {"HD": {"VN": "1.6", "SO": "coordinate"}, "SQ": [{"SN": "chr1", "LN": 1000}]}
+    records = [
+        ("read1", "CELL0001", "UMI0000001", "gene-known", "tx-known"),
+        ("read1-duplicate", "CELL0001", "UMI0000001", "gene-known", "tx-known"),
+        ("read2", "CELL0001", "UMI0000002", "NOVELG000001", "NOVELT0000000001"),
+        ("read3", "CELL0002", "UMI0000001", "gene-known", "tx-known"),
+    ]
+    with pysam.AlignmentFile(bam_path, "wb", header=header) as bam:
+        for position, (read_id, barcode, umi, gene_id, transcript_id) in enumerate(records):
+            read = pysam.AlignedSegment(bam.header)
+            read.query_name = read_id
+            read.query_sequence = "A" * 10
+            read.flag = 0
+            read.reference_id = 0
+            read.reference_start = position * 10
+            read.mapping_quality = 60
+            read.cigar = ((0, 10),)
+            read.query_qualities = pysam.qualitystring_to_array("I" * 10)
+            read.set_tag("CB", barcode)
+            read.set_tag("UB", umi)
+            read.set_tag("GX", gene_id)
+            read.set_tag("TX", transcript_id)
+            bam.write(read)
+
+    make_h5ad.convert_annotated_bam(
+        bam_path=bam_path,
+        gtf_path=gtf_path,
+        gene_output_path=gene_output,
+        transcript_output_path=transcript_output,
+        sample="sample",
+        genome="mm39",
+        entity="cell",
+        qc_output_path=qc_output,
+    )
+
+    gene_data = anndata.read_h5ad(gene_output)
+    transcript_data = anndata.read_h5ad(transcript_output)
+    assert set(gene_data.var_names) == {"gene-known", "gene-unused", "NOVELG000001"}
+    assert set(transcript_data.var_names) == {"tx-known", "tx-unused", "NOVELT0000000001"}
+    assert list(gene_data.obs_names) == ["CELL0001", "CELL0002"]
+    assert list(gene_data.obs["barcode_1"]) == ["CELL0001", "CELL0002"]
+    assert gene_data[0, "gene-known"].X[0, 0] == 1
+    assert gene_data[0, "NOVELG000001"].X[0, 0] == 1
+    assert gene_data[1, "gene-known"].X[0, 0] == 1
+    assert transcript_data[0, "tx-known"].X[0, 0] == 1
+    assert transcript_data[0, "NOVELT0000000001"].X[0, 0] == 1
+    assert transcript_data[1, "tx-known"].X[0, 0] == 1
+    assert transcript_data.var.loc["tx-known", "gene_id"] == "gene-known"
+    assert gene_data.uns["dogme"]["count_type"] == "unique_umi_counts"
+    assert gene_data.uns["dogme"]["unmapped_feature_count"] == 1
+    assert transcript_data.uns["dogme"]["unmapped_feature_count"] == 1
+    assert qc_output.exists()

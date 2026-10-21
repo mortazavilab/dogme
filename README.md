@@ -4,6 +4,10 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
+## Unreleased
+
+- Replaced kallisto genome-BAM generation with Splitcode `CB`/`UB` tagging of annotated BAMs for single-cell cDNA. H5AD gene and transcript counts now use annotated BAM tags and the final DOGME GTF, retaining novel annotations; kallisto/bustools quantification remains available.
+
 ## What's New in Dogme 1.4.2
 
 - **End-to-end single-cell cDNA workflow:** With `readType = 'CDNA'` and `singleCell = true`, DOGME generates and validates seqspec metadata, splits and corrects cDNA/UMI/barcode FASTQs with splitcode, and runs single-cell kallisto/bustools quantification.
@@ -21,7 +25,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 - **Single-cell kallisto/bustools quantification:**
   Added a `kb count`-equivalent workflow using kallisto and bustools alone, with long-read mode, technology string `2,0,24:1,0,10:0,0,0`, barcode whitelist correction, and support for precomputed or auto-built `k=63` indexes.
 - **Single-cell H5AD expression outputs:**
-  Single-cell cDNA runs now publish separate cell-by-gene and cell-by-transcript AnnData H5AD files from the kallisto/bustools count matrices.
+  Single-cell cDNA runs add Splitcode barcodes and UMIs to the annotated BAM and build cell-by-gene and cell-by-transcript H5AD files from its annotation tags, including novel DOGME gene and transcript IDs.
 - **Automatic GTF-to-Junction BED Conversion:**  
   The pipeline now automatically converts GTF files to junction BED files for minimap2 spliced alignment, ensuring correct handling of RNA and cDNA mapping.
 - **Increased Maximum Intron Size:**  
@@ -94,18 +98,21 @@ Prerequisites include installing nextflow, using java/17 or better, installing m
 By default, nextflow will use the launchdirectory as the place to create its workfolder.
 You can either provide pre-built kallisto index and t2g files in your config, or set `kallistoIndex` and `t2g` to `null` to have the pipeline auto-build them from the genome and GTF files in your `genome_annot_refs`. When auto-building, the pipeline will generate a kallisto index and t2g for each genome entry and run quantification against each one.
 
-Genome BAM generation is enabled by default with `genomeBam = true` for RNA and CDNA
-runs. DOGME runs kallisto in ONT long-read mode with `--genomebam`, derives the
-chromosome sizes from the configured genome FASTA (creating a FASTA index with
-`samtools faidx` when needed), and publishes sorted/indexed
-`${params.sample}.${genome}.kallisto.bam` and `.bai` files under `${bamDir}`.
-This requires kallisto 0.52.0 or newer. For single-cell cDNA runs, DOGME adds
-`--genomebam` to the existing `kallisto bus` command, producing the BUS
-quantification and genome BAM in one kallisto invocation.
-This also applies when starting from existing unmapped BAMs with the `remap`
-entry point. Genome BAM generation completes as part of that workflow. Set
-`genomeBam = false` to disable these additional outputs. The existing minimap2
-BAMs and kallisto count outputs are unchanged.
+For `readType = 'CDNA'` with `singleCell = true`, DOGME runs Splitcode on the
+same read IDs used for mapping, then adds the corrected barcode and UMI to the
+annotated BAM as `CB` and `UB` tags. The tagged BAM is published under
+`${annotDir}` as `${sample}.${genome}.annotated.single_cell.bam`, with an index
+and a Splitcode/BAM matching QC table. Duplicate or unsynchronized Splitcode
+read IDs, and Splitcode IDs absent from the annotated BAM, stop the task rather
+than silently assigning tags to the wrong reads. Reads excluded by Splitcode
+remain untagged and are reported in the QC table.
+
+Single-cell H5AD files are built from this tagged BAM and the final DOGME GTF,
+rather than the reference-only kallisto BUS matrices, so observed novel gene
+and transcript IDs are retained. Counts are unique UMIs per barcode-feature
+pair; the kallisto/bustools BUS quantification outputs remain available
+separately. This path applies to single-cell cDNA and does not add cell-level
+H5AD processing to Dorado-demultiplexed samples.
 
 ---
 
@@ -128,7 +135,6 @@ params {
 
     // Optional seqspec generation for FASTQs created by DOGME.
     singleCell = false
-    genomeBam = true
     singleCellH5ad = true
     singleCellEntity = 'cell' // or 'nucleus'; metadata only, not inferred
     singleCellKit = null
@@ -296,22 +302,22 @@ The renderer and splitcode task run inside `ghcr.io/mortazavilab/dogme-pipeline:
 
 ### Single-cell H5AD outputs
 
-For `readType = 'CDNA'` with `singleCell = true`, DOGME also creates two sparse AnnData files for each genome under `${kallistoDir}/${genome}/single-cell/${sample}_${genome}`:
+For `readType = 'CDNA'` with `singleCell = true`, DOGME creates two sparse AnnData files for each genome under `${kallistoDir}/${genome}/single-cell/`:
 
-- `${sample}_${genome}.gene.h5ad` contains cell-by-gene raw counts from the gene-collapsed `bustools count` output.
-- `${sample}_${genome}.transcript.h5ad` contains cell-by-transcript raw counts from a second `bustools count` output using an identity transcript-to-transcript map.
+- `${sample}_${genome}.gene.h5ad` contains cell-by-gene unique-UMI counts from the `GX` gene tags on the tagged annotated BAM.
+- `${sample}_${genome}.transcript.h5ad` contains cell-by-transcript unique-UMI counts from its `TX` transcript tags.
 
-Both files use cells as observations and genes or transcripts as variables. Corrected cell barcodes are stored in `obs_names`, their first 8 bases (the `barcode-1` region) are also stored in `obs['barcode_1']`, feature identifiers are stored in `var_names`, and per-cell/per-feature total counts and detected-feature counts are included. Transcript H5AD files also include `var['gene_id']` when a transcript-to-gene mapping is available. DOGME records the sample, genome, read type, feature type, and `singleCellEntity` value in `uns['dogme']`. Counts remain raw sparse integer counts; DOGME does not normalize, filter, cluster, or infer whether observations are cells or nuclei. When H5AD generation is enabled, `${sample}_${genome}.single_cell_qc.tsv` is published beside the H5AD files with both matrix dimensions and barcode counts above raw gene-level UMI thresholds from 100 to 20,000.
+Both files use cells as observations and genes or transcripts as variables. Features are the union of IDs in the final DOGME GTF and IDs observed in BAM tags, so novel annotations are represented even when they are not in the reference kallisto index. Corrected cell barcodes are stored in `obs_names` and their first 8 bases are also stored in `obs['barcode_1']`; feature identifiers are stored in `var_names`. Per-cell and per-feature UMI totals and detected-feature counts are included. Transcript H5AD files include `var['gene_id']` from the DOGME GTF when available. DOGME records the sample, genome, read type, feature type, count type, and `singleCellEntity` value in `uns['dogme']`. Counts remain raw sparse integers deduplicated by barcode, feature, and UMI; DOGME does not normalize, filter, cluster, or infer whether observations are cells or nuclei. When H5AD generation is enabled, `${sample}_${genome}.single_cell_qc.tsv` is published beside the H5AD files with both matrix dimensions and barcode counts above gene-level UMI thresholds from 100 to 20,000.
 
-H5AD creation is enabled by default. To skip it while retaining the existing kallisto/bustools outputs, set `singleCellH5ad = false`. The execution image must provide the packages listed in `requirements-h5ad.txt`: `anndata`, `h5py`, `numpy`, `pandas`, and `scipy`. Dorado-demultiplexed bulk outputs are not converted to cell-level H5AD files because that path does not currently retain per-cell UMI/barcode processing.
+H5AD creation is enabled by default. To skip it while retaining the tagged annotated BAM and kallisto/bustools outputs, set `singleCellH5ad = false`. The execution image must provide the packages listed in `requirements-h5ad.txt`, including `pysam`. Dorado-demultiplexed outputs are not converted to cell-level H5AD files because that path does not currently retain per-cell UMI/barcode processing.
 
 Example:
 
 ```python
 import anndata
 
-gene_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39/sample_mm39.gene.h5ad')
-transcript_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39/sample_mm39.transcript.h5ad')
+gene_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39.gene.h5ad')
+transcript_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39.transcript.h5ad')
 ```
 
 ---
@@ -335,7 +341,6 @@ nextflow run mortazavilab/dogme -entry kallisto -c yourconfig.conf
 ```
 
 This will look for `*.unmapped.bam` files in `params.bamDir` and write kallisto outputs without re-running basecalling or remapping.
-It also writes kallisto genome BAMs to `params.bamDir` when `genomeBam` is enabled.
 
 ## Example: Running fastqCDNA From an Existing CDNA FASTQ
 
