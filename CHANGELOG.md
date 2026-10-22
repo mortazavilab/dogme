@@ -4,19 +4,21 @@ All notable DOGME changes are documented here.
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-10-22
+
 ### Added
 
 - Tag single-cell cDNA annotated BAMs with Splitcode corrected barcodes (`CB`) and UMIs (`UB`).
 - Build gene- and transcript-level H5AD files from annotated BAM tags and the final DOGME GTF, including novel annotations; count unique UMIs per barcode-feature pair.
-- Report tagged and untagged BAM alignments, and fail clearly when Splitcode IDs are duplicate or unsynchronized.
-- Added per-genome prebuilt kallisto `index` and `t2g` reference fields, with backward-compatible global reference fallback.
+- Report tagged and untagged BAM alignments, including Splitcode reads absent from the annotated BAM; fail clearly when FASTQ IDs are duplicate or unsynchronized.
+- Generate separate reference-indexed gene and transcript H5ADs from kallisto/bustools matrices, alongside annotation-derived H5ADs.
+- Publish single-cell H5AD files and their QC tables under `${topDir}/h5ad`.
+- Add per-genome prebuilt kallisto `index` and `t2g` reference fields, with backward-compatible global reference fallback.
 
 ### Changed
 
 - Removed kallisto `--genomebam` generation; minimap2-mapped and annotated BAMs remain the genome-alignment outputs, while kallisto/bustools quantification is unchanged.
-- Build single-cell H5AD counts from `GX`/`TX` annotation tags instead of reference-only BUS matrices.
-- Generate separate reference-indexed gene and transcript H5ADs from each kallisto/bustools single-cell count matrix.
-- Publish single-cell H5AD files and their QC tables under `${topDir}/h5ad`.
+- Build novel-aware single-cell H5AD counts from `GX`/`TX` annotation tags and the final DOGME GTF, while retaining reference-indexed kallisto H5AD outputs.
 
 ### Fixed
 

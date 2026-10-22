@@ -4,12 +4,10 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
 
 ---
 
-## Unreleased
+## What's New in Dogme 1.4.3
 
-- Replaced kallisto genome-BAM generation with Splitcode `CB`/`UB` tagging of annotated BAMs for single-cell cDNA. H5AD gene and transcript counts now use annotated BAM tags and the final DOGME GTF, retaining novel annotations; kallisto/bustools quantification remains available.
-
-## What's New in Dogme 1.4.2
-
+- **Novel-aware single-cell H5AD:** Single-cell cDNA annotated BAMs receive Splitcode corrected barcode (`CB`) and UMI (`UB`) tags. Gene and transcript H5ADs use the final DOGME annotations, including novel features; separate reference-indexed kallisto/bustools H5ADs remain available.
+- **Kallisto genome BAM removal:** Genome alignments use the minimap2-mapped and annotated BAMs; kallisto/bustools quantification remains unchanged.
 - **End-to-end single-cell cDNA workflow:** With `readType = 'CDNA'` and `singleCell = true`, DOGME generates and validates seqspec metadata, splits and corrects cDNA/UMI/barcode FASTQs with splitcode, and runs single-cell kallisto/bustools quantification.
 - **FASTQ seqspec generation:** DOGME can render, upgrade, format, and validate a seqspec artifact whenever it generates a FASTQ from an unmapped BAM. Single-cell cDNA runs additionally generate a splitcode configuration and processed FASTQ.
 - **Optional Dorado demultiplexing:** Set `kitName` to classify and demultiplex barcoded reads. Classified reads use `${sample}.${barcode}` output names and run through barcode-aware mapping, bulk kallisto, annotation, and RNA/DNA modification processing; unclassified reads are published without downstream analysis.
@@ -42,7 +40,7 @@ A nextflow pipeline for basecalling nanopore reads with and without modification
   - Processes include retry/error strategies for robustness of long-running tasks.
 
 
-Dogme 1.4.2 carries forward the 1.3.3 workflow updates, including seqspec generation, single-cell cDNA splitting, and single-cell kallisto/bustools quantification.
+Dogme 1.4.3 carries forward the 1.4.2 workflow updates, including seqspec generation, single-cell cDNA splitting, and kallisto/bustools quantification.
 
 ---
 
