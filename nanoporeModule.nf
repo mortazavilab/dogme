@@ -6,8 +6,13 @@ nextflow.enable.dsl=2
 include { openChromatinTask as openChromatinTaskBg } from './modkitModule'
 include { openChromatinTask as openChromatinTaskBed } from './modkitModule'
 
+def optionalParam(String name, defaultValue = null) {
+    params.containsKey(name) ? params[name] : defaultValue
+}
+
 def isSingleCellEnabled() {
-    params.singleCell instanceof Boolean ? params.singleCell : params.singleCell?.toString()?.toBoolean()
+    def singleCell = optionalParam('singleCell', false)
+    singleCell instanceof Boolean ? singleCell : singleCell?.toString()?.toBoolean()
 }
 
 process softwareVTask {
@@ -59,7 +64,8 @@ process doradoTask {
     path "${inputFile.simpleName}.bam"
     publishDir params.dorDir, mode: 'copy'
     script:
-    def kitNameArg = params.kitName ? "--kit-name ${params.kitName}" : ''
+    def kitName = optionalParam('kitName')
+    def kitNameArg = kitName ? "--kit-name ${kitName}" : ''
     """
     . ${params.scriptEnv}
     mkdir -p ${params.dorDir}
@@ -103,7 +109,7 @@ process demuxSummaryTask {
     path "${params.sample}.demux_summary.tsv"
     publishDir params.topDir, mode: 'copy'
     script:
-    def keepCount = params.keepBarcodes ?: 0
+    def keepCount = optionalParam('keepBarcodes', 0) ?: 0
     """
     . ${params.scriptEnv}
     : > raw_counts.tsv
@@ -150,12 +156,13 @@ process demuxSummaryTask {
 }
 
 process selectTopDemuxBamsTask {
-    tag "top ${params.keepBarcodes} barcodes"
+    tag "top ${optionalParam('keepBarcodes')} barcodes"
     input:
     path inputBams
     output:
     path "selected/*.bam", emit: selected_bams
     script:
+    def keepCount = optionalParam('keepBarcodes')
     """
     . ${params.scriptEnv}
     : > read_counts.tsv
@@ -169,7 +176,7 @@ process selectTopDemuxBamsTask {
 
     awk -F '\\t' '{ counts[\$1] += \$2 } END { for (barcode in counts) print barcode "\\t" counts[barcode] }' read_counts.tsv \
         | sort -k2,2nr -k1,1n \
-        | head -n ${params.keepBarcodes} \
+        | head -n ${keepCount} \
         | cut -f1 > selected_barcodes.txt
 
     mkdir selected
@@ -450,10 +457,13 @@ process demuxGenerateSeqspecTask {
     script:
     def outputSpec = "${sampleName}.seqspec.yaml"
     def singleCellEnabled = isSingleCellEnabled()
-    def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
-    def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
-    def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
-    def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
+    def singleCellKit = optionalParam('singleCellKit')
+    def seqspecTemplate = optionalParam('seqspecTemplate')
+    def seqspecVariables = optionalParam('seqspecVariables')
+    def singleCellKitArg = singleCellKit ? "--single-cell-kit ${singleCellKit}" : ''
+    def seqspecMd5Enabled = optionalParam('seqspecMd5', true)
+    def seqspecTemplateArg = seqspecTemplate ? "--template ${seqspecTemplate}" : ''
+    def seqspecVariablesArg = seqspecVariables ? "--variables ${seqspecVariables}" : ''
     """
     . ${params.scriptEnv}
     python ${scripts}/generate_seqspec.py \
@@ -482,10 +492,13 @@ process generateSeqspecTask {
     script:
     def outputSpec = "${params.sample}.seqspec.yaml"
     def singleCellEnabled = isSingleCellEnabled()
-    def singleCellKitArg = params.containsKey('singleCellKit') && params.singleCellKit ? "--single-cell-kit ${params.singleCellKit}" : ''
-    def seqspecMd5Enabled = !params.containsKey('seqspecMd5') || params.seqspecMd5
-    def seqspecTemplateArg = params.containsKey('seqspecTemplate') && params.seqspecTemplate ? "--template ${params.seqspecTemplate}" : ''
-    def seqspecVariablesArg = params.containsKey('seqspecVariables') && params.seqspecVariables ? "--variables ${params.seqspecVariables}" : ''
+    def singleCellKit = optionalParam('singleCellKit')
+    def seqspecTemplate = optionalParam('seqspecTemplate')
+    def seqspecVariables = optionalParam('seqspecVariables')
+    def singleCellKitArg = singleCellKit ? "--single-cell-kit ${singleCellKit}" : ''
+    def seqspecMd5Enabled = optionalParam('seqspecMd5', true)
+    def seqspecTemplateArg = seqspecTemplate ? "--template ${seqspecTemplate}" : ''
+    def seqspecVariablesArg = seqspecVariables ? "--variables ${seqspecVariables}" : ''
     """
     . ${params.scriptEnv}
     python ${scripts}/generate_seqspec.py \
@@ -553,8 +566,10 @@ process singleCellKallistoTask {
     path h5adScript
     output:
     path "${params.sample}_${genomeName}", emit: results
-    path "${params.sample}_${genomeName}.single_cell_qc.tsv", optional: true, emit: qc
-    publishDir "${params.kallistoDir}/${genomeName}/single-cell", mode: 'copy'
+    path "${params.sample}.${genomeName}.kallisto.gene.h5ad", optional: true, emit: gene_h5ad
+    path "${params.sample}.${genomeName}.kallisto.transcript.h5ad", optional: true, emit: transcript_h5ad
+    publishDir "${params.kallistoDir}/${genomeName}/single-cell", pattern: "${params.sample}_${genomeName}", mode: 'copy'
+    publishDir "${params.topDir}/h5ad", pattern: "*.h5ad", mode: 'copy'
     script:
     """
     . ${params.scriptEnv}
@@ -568,26 +583,23 @@ process singleCellKallistoTask {
         -o "\${output_dir}/corrected.bus" "\${output_dir}/output.bus"
     bustools sort -t ${task.cpus} "\${output_dir}/corrected.bus" \\
         -o "\${output_dir}/sorted.bus"
-    # Collapse transcripts with the supplied t2g map for gene-level counts.
-    # --genecounts writes feature labels required by make_h5ad.py.
+    # Preserve the existing kallisto/bustools gene-level count output.
     bustools count "\${output_dir}/sorted.bus" \\
         -t "\${output_dir}/transcripts.txt" \\
         -e "\${output_dir}/matrix.ec" \\
         -o "\${output_dir}/count" --cm -m --genecounts -g ${t2gFile}
+    awk 'NF {print \$1 "\\t" \$1}' "\${output_dir}/transcripts.txt" > "\${output_dir}/transcript_identity.t2g"
+    bustools count "\${output_dir}/sorted.bus" \\
+        -t "\${output_dir}/transcripts.txt" \\
+        -e "\${output_dir}/matrix.ec" \\
+        -o "\${output_dir}/transcript_count" --cm -m --genecounts \\
+        -g "\${output_dir}/transcript_identity.t2g"
     if [[ "${params.singleCellH5ad}" == "true" ]]; then
-        # Map each transcript to itself to retain transcript-level features.
-        awk 'NF {print \$1 "\\t" \$1}' "\${output_dir}/transcripts.txt" > "\${output_dir}/transcript_identity.t2g"
-        bustools count "\${output_dir}/sorted.bus" \\
-            -t "\${output_dir}/transcripts.txt" \\
-            -e "\${output_dir}/matrix.ec" \\
-            -o "\${output_dir}/transcript_count" --cm -m --genecounts \\
-            -g "\${output_dir}/transcript_identity.t2g"
-        # Write sparse cell-by-feature AnnData files for gene and transcript counts.
         python ${h5adScript} \\
             --matrix "\${output_dir}/count.mtx" \\
             --barcodes "\${output_dir}/count.barcodes.txt" \\
             --features "\${output_dir}/count.genes.txt" \\
-            --output "\${output_dir}/${params.sample}_${genomeName}.gene.h5ad" \\
+            --output "${params.sample}.${genomeName}.kallisto.gene.h5ad" \\
             --feature-type gene \\
             --sample "${params.sample}" \\
             --genome "${genomeName}" \\
@@ -597,18 +609,13 @@ process singleCellKallistoTask {
             --matrix "\${output_dir}/transcript_count.mtx" \\
             --barcodes "\${output_dir}/transcript_count.barcodes.txt" \\
             --features "\${output_dir}/transcript_count.genes.txt" \\
-            --output "\${output_dir}/${params.sample}_${genomeName}.transcript.h5ad" \\
+            --output "${params.sample}.${genomeName}.kallisto.transcript.h5ad" \\
             --feature-type transcript \\
             --sample "${params.sample}" \\
             --genome "${genomeName}" \\
             --read-type "${params.readType}" \\
             --entity "${params.singleCellEntity}" \\
-            --t2g "${t2gFile}"
-            # Summarize both H5AD dimensions and gene-level raw UMI totals per barcode.
-            python ${h5adScript} \\
-                --gene-h5ad "\${output_dir}/${params.sample}_${genomeName}.gene.h5ad" \\
-                --transcript-h5ad "\${output_dir}/${params.sample}_${genomeName}.transcript.h5ad" \\
-                --qc-output "${params.sample}_${genomeName}.single_cell_qc.tsv"
+            --t2g ${t2gFile}
     fi
     """
 }
@@ -815,9 +822,9 @@ process annotateRNATask {
     tuple path(bam), path(bai), val(genomeName), path(gtf)
     output:
     val true, emit: completion
-    path "*.annotated.ba*"
+    tuple path("*.annotated.bam"), path("*_dogme.gtf"), val(genomeName), emit: annotation_products
+    path "*.annotated.bam.bai"
     path "*.csv"
-    path "*_dogme*"
     path "*.log"
     publishDir params.annotDir, mode: 'copy'
     script:
@@ -837,6 +844,50 @@ process annotateRNATask {
         --out ${outputPrefix} \
         --threads ${task.cpus} \$cdna_opt \
         --novel_prefix "${outputPrefix}" 2> ${outputPrefix}.log
+    """
+}
+
+process singleCellAnnotatedBamTask {
+    tag "${sampleName}.${genomeName} tagged annotated BAM"
+    input:
+    tuple path(annotatedBam), path(dogmeGtf), val(genomeName), val(sampleName), path(umiFile), path(barcodeFile)
+    path tagScript
+    path h5adScript
+    output:
+    val true, emit: completion
+    tuple path("${sampleName}.${genomeName}.annotated.single_cell.bam"),
+        path("${sampleName}.${genomeName}.annotated.single_cell.bam.bai"),
+        val(sampleName), val(genomeName), emit: tagged_bams
+    path "${sampleName}.${genomeName}.gene.h5ad", optional: true, emit: gene_h5ad
+    path "${sampleName}.${genomeName}.transcript.h5ad", optional: true, emit: transcript_h5ad
+    path "${sampleName}.${genomeName}.single_cell_qc.tsv", optional: true, emit: h5ad_qc
+    path "${sampleName}_${genomeName}.splitcode_bam_qc.tsv", emit: tagging_qc
+    publishDir params.annotDir, pattern: "*.annotated.single_cell.bam*", mode: 'copy'
+    publishDir "${params.topDir}/h5ad", pattern: "*.h5ad", mode: 'copy'
+    publishDir "${params.topDir}/h5ad", pattern: "*.single_cell_qc.tsv", mode: 'copy'
+    publishDir "${params.annotDir}", pattern: "*.splitcode_bam_qc.tsv", mode: 'copy'
+    script:
+    """
+    . ${params.scriptEnv}
+    tagged_bam="${sampleName}.${genomeName}.annotated.single_cell.bam"
+    python ${tagScript} \\
+        --bam "${annotatedBam}" \\
+        --umi "${umiFile}" \\
+        --barcode "${barcodeFile}" \\
+        --output "\${tagged_bam}" \\
+        --qc-output "${sampleName}_${genomeName}.splitcode_bam_qc.tsv"
+    samtools index -@ ${task.cpus} "\${tagged_bam}"
+    if [[ "${params.singleCellH5ad}" == "true" ]]; then
+        python ${h5adScript} \\
+            --bam "\${tagged_bam}" \\
+            --gtf "${dogmeGtf}" \\
+            --gene-output "${sampleName}.${genomeName}.gene.h5ad" \\
+            --transcript-output "${sampleName}.${genomeName}.transcript.h5ad" \\
+            --qc-output "${sampleName}.${genomeName}.single_cell_qc.tsv" \\
+            --sample "${sampleName}" \\
+            --genome "${genomeName}" \\
+            --entity "${params.singleCellEntity}"
+    fi
     """
 }
 
@@ -953,6 +1004,9 @@ workflow kallistoWorkflow {
 
     main:
     def singleCellEnabled = isSingleCellEnabled()
+    def kallistoIndex = optionalParam('kallistoIndex')
+    def prebuiltT2g = optionalParam('t2g')
+    def splitcodeFastqs = Channel.empty()
     fastqFile = extractfastqTask(unmapped_bams_ch)
 
     seqspecFile = generateSeqspecTask(
@@ -965,17 +1019,19 @@ workflow kallistoWorkflow {
         splitcodeInput = fastqFile.combine(seqspecFile)
             .map { fastq, spec -> tuple(spec, fastq) }
         splitcodeTask(splitcodeInput)
+        splitcodeFastqs = splitcodeTask.out.fastqs.map { cDNA, umi, barcode ->
+            tuple(params.sample, umi, barcode)
+        }
     }
-
-    if (!params.kallistoIndex || !params.t2g) {
+    if (!kallistoIndex || !prebuiltT2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
             .map { ref -> tuple(ref.name, ref.genome, ref.annot) }
         refFiles = makeKallistoRefsTask(kallisto_refs_ch)
         indexFiles = kallistoIndexTask(refFiles)
         if (params.readType == 'CDNA' && singleCellEnabled) {
             singleCellInput = splitcodeTask.out.fastqs.combine(indexFiles)
-                .map { cDNA, umi, barcode, genomeName, idx, t2g ->
-                    tuple(cDNA, umi, barcode, idx, t2g, genomeName)
+                .map { cDNA, umi, barcode, genomeName, idx, t2gFile ->
+                    tuple(cDNA, umi, barcode, idx, t2gFile, genomeName)
                 }
             terminalKallisto = singleCellKallistoTask(
                 singleCellInput,
@@ -988,8 +1044,9 @@ workflow kallistoWorkflow {
         }
     } else {
         if (params.readType == 'CDNA' && singleCellEnabled) {
+            def genomeName = params.genome_annot_refs[0].name
             singleCellInput = splitcodeTask.out.fastqs.map { cDNA, umi, barcode ->
-                tuple(cDNA, umi, barcode, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+                tuple(cDNA, umi, barcode, file(kallistoIndex), file(prebuiltT2g), genomeName)
             }
             terminalKallisto = singleCellKallistoTask(
                 singleCellInput,
@@ -997,14 +1054,19 @@ workflow kallistoWorkflow {
             )
         } else {
             kallistoInput = fastqFile.map { fastq ->
-                tuple(fastq, file(params.kallistoIndex), file(params.t2g), 'prebuilt')
+                tuple(fastq, file(kallistoIndex), file(prebuiltT2g), 'prebuilt')
             }
             terminalKallisto = kallistoTask(kallistoInput)
         }
     }
 
+    def terminalKallistoCompletion = (params.readType == 'CDNA' && singleCellEnabled)
+        ? terminalKallisto.results.collect()
+        : terminalKallisto.collect()
+
     emit:
-    completion = terminalKallisto.results.collect().combine(seqspecFile.collect())
+    completion = terminalKallistoCompletion.combine(seqspecFile.collect())
+    fastqs = splitcodeFastqs
 }
 
 workflow kallistoFastqWorkflow {
@@ -1013,6 +1075,22 @@ workflow kallistoFastqWorkflow {
 
     main:
     fastqFile = fastq_ch
+    def splitcodeFastqs = Channel.empty()
+    def seqspecCompletion = Channel.of(true)
+    if (params.readType == 'CDNA' && isSingleCellEnabled() && singleCellTaggingEnabled) {
+        seqspecFile = generateSeqspecTask(
+            fastqFile,
+            file("${projectDir}/templates"),
+            file("${projectDir}/scripts"),
+        )
+        splitcodeInput = fastqFile.combine(seqspecFile)
+            .map { fastq, spec -> tuple(spec, fastq) }
+        splitcodeTask(splitcodeInput)
+        splitcodeFastqs = splitcodeTask.out.fastqs.map { cDNA, umi, barcode ->
+            tuple(params.sample, umi, barcode)
+        }
+        seqspecCompletion = seqspecFile.collect()
+    }
 
     if (!params.kallistoIndex || !params.t2g) {
         def kallisto_refs_ch = nextflow.Channel.fromList(params.genome_annot_refs)
@@ -1030,7 +1108,8 @@ workflow kallistoFastqWorkflow {
     }
 
     emit:
-    completion = terminalKallisto.collect()
+    completion = terminalKallisto.collect().combine(seqspecCompletion)
+    fastqs = splitcodeFastqs
 }
 
 workflow demuxKallistoWorkflow {
@@ -1081,7 +1160,7 @@ workflow mainWorkflow {
     def genome_annot_ch = nextflow.Channel.fromList(params.genome_annot_refs)
     def demuxAnnotationBams = Channel.empty()
     def analysisCompletions = Channel.empty()
-    if (params.kitName) {
+    if (optionalParam('kitName')) {
         demuxBamFiles = doradoDemuxTask(unmappedbam).demuxed_bams
             .flatten()
         demuxSummary = demuxSummaryTask(demuxBamFiles.collect())
@@ -1091,7 +1170,7 @@ workflow mainWorkflow {
                 def name = bam.simpleName.toLowerCase()
                 !name.contains('unclassified') && !name.contains('no_barcode')
             }
-        if (params.keepBarcodes != null) {
+        if (optionalParam('keepBarcodes') != null) {
             classifiedBams = selectTopDemuxBamsTask(classifiedBams.collect()).selected_bams
                 .flatten()
                 .map { bam -> tuple(bam, bam.baseName) }
@@ -1157,7 +1236,11 @@ workflow mainWorkflow {
     }
 
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
-        annotations = annotateRNAWorkflow(mappedBams.mix(demuxAnnotationBams))
+        annotations = annotateRNAWorkflow(
+            mappedBams.mix(demuxAnnotationBams),
+            kallistoResults.fastqs,
+            params.readType == 'CDNA' && isSingleCellEnabled(),
+        )
         analysisCompletions = analysisCompletions.mix(annotations.completion)
     }
 
@@ -1177,7 +1260,7 @@ workflow basecallWorkflow {
     bamFiles = doradoTask(pod5_files_ch, modelDirectory, modelPath, theModel).collectFile()
     fileCount = bamFiles.map { it.size() }.first()
     unmappedbam = mergeBamsTask(fileCount)
-    if (params.kitName) {
+    if (optionalParam('kitName')) {
         demuxedBams = doradoDemuxTask(unmappedbam)
         classifiedBams = demuxedBams.demuxed_bams
             .flatten()
@@ -1215,7 +1298,11 @@ workflow remapWorkflow {
 
     if (params.readType == 'RNA' || params.readType == 'CDNA') {
         kallistoResults = kallistoWorkflow(unmappedbam)
-        annotations = annotateRNAWorkflow(mappedBams)
+        annotations = annotateRNAWorkflow(
+            mappedBams,
+            kallistoResults.fastqs,
+            params.readType == 'CDNA' && isSingleCellEnabled(),
+        )
         analysisCompletions = analysisCompletions.mix(kallistoResults.completion)
         analysisCompletions = analysisCompletions.mix(annotations.completion)
     }
@@ -1257,7 +1344,11 @@ workflow fastqCDNAWorkflow {
     minimapTask(unmappedBams)
     def mappedBams = minimapTask.out.mapped_bams
 
-    annotations = annotateRNAWorkflow(mappedBams)
+    annotations = annotateRNAWorkflow(
+        mappedBams,
+        kallistoResults.fastqs,
+        params.readType == 'CDNA' && isSingleCellEnabled(),
+    )
     generateReport(params.topDir, kallistoResults.completion.mix(annotations.completion).collect())
 }
 
@@ -1275,6 +1366,8 @@ workflow reportsWorkflow {
 workflow annotateRNAWorkflow {
     take:
     mapped_bams_ch
+    splitcode_fastqs_ch
+    singleCellTaggingEnabled
 
     main:
     // 1. Create the GTF channel with a new name: 'annotation_gtf_ch'
@@ -1304,7 +1397,25 @@ workflow annotateRNAWorkflow {
     }
 
     annotationResults = annotateRNATask(mappedBamsWithGtf)
+    def taggingCompletion = Channel.of(true)
+    if (params.readType == 'CDNA' && isSingleCellEnabled()) {
+        def taggingInputs = annotationResults.annotation_products
+            .combine(splitcode_fastqs_ch)
+            .filter { annotatedBam, dogmeGtf, genomeName, sampleName, umiFile, barcodeFile ->
+                annotatedBam.name == "${sampleName}.${genomeName}.annotated.bam" ||
+                    annotatedBam.name == "${sampleName}.unmapped.${genomeName}.annotated.bam"
+            }
+            .map { annotatedBam, dogmeGtf, genomeName, sampleName, umiFile, barcodeFile ->
+                tuple(annotatedBam, dogmeGtf, genomeName, sampleName, umiFile, barcodeFile)
+            }
+        taggedResults = singleCellAnnotatedBamTask(
+            taggingInputs,
+            file("${projectDir}/scripts/tag_annotated_bam.py"),
+            file("${projectDir}/scripts/make_h5ad.py"),
+        )
+        taggingCompletion = taggedResults.completion.collect()
+    }
 
     emit:
-    completion = annotationResults.completion.collect()
+    completion = annotationResults.completion.collect().combine(taggingCompletion)
 }

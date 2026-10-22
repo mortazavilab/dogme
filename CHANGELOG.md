@@ -4,13 +4,35 @@ All notable DOGME changes are documented here.
 
 ## [Unreleased]
 
+## [1.4.3] - 2026-10-22
+
+### Added
+
+- Tag single-cell cDNA annotated BAMs with Splitcode corrected barcodes (`CB`) and UMIs (`UB`).
+- Build gene- and transcript-level H5AD files from annotated BAM tags and the final DOGME GTF, including novel annotations; count unique UMIs per barcode-feature pair.
+- Report tagged and untagged BAM alignments, including Splitcode reads absent from the annotated BAM; fail clearly when FASTQ IDs are duplicate or unsynchronized.
+- Generate separate reference-indexed gene and transcript H5ADs from kallisto/bustools matrices, alongside annotation-derived H5ADs.
+- Publish single-cell H5AD files and their QC tables under `${topDir}/h5ad`.
+- Add per-genome prebuilt kallisto `index` and `t2g` reference fields, with backward-compatible global reference fallback.
+
+### Changed
+
+- Removed kallisto `--genomebam` generation; minimap2-mapped and annotated BAMs remain the genome-alignment outputs, while kallisto/bustools quantification is unchanged.
+- Build novel-aware single-cell H5AD counts from `GX`/`TX` annotation tags and the final DOGME GTF, while retaining reference-indexed kallisto H5AD outputs.
+
+### Fixed
+
+- Restore identity transcript mapping for kallisto transcript H5AD generation, producing a transcript-feature matrix instead of an incompatible transcript-compatibility-count matrix.
+- Allow Splitcode reads absent from the annotated BAM, such as unmapped reads, while reporting their count in the tagging QC table.
+- Suppress undefined-parameter warnings when optional barcode demultiplexing, modification, and SeqSpec settings are omitted.
+
 ## [1.4.2] - 2026-09-16
 
 ### Added
 
-- Added optional H5AD generation for `CDNA` single-cell runs, publishing separate sparse cell-by-gene and cell-by-transcript AnnData files per genome; transcript counts use an identity transcript map so features remain individual transcripts rather than compatibility classes.
+- Added optional H5AD generation for `CDNA` single-cell runs, publishing separate sparse cell-by-gene and cell-by-transcript AnnData files per genome.
 - Added `singleCellH5ad` and `singleCellEntity` parameters, with raw count, barcode, feature, QC, transcript-to-gene, and pipeline metadata in the generated H5AD files.
-- Added `${sample}_${genome}.single_cell_qc.tsv` beside single-cell H5AD outputs, reporting gene and transcript matrix shapes plus barcode counts above configured raw gene-level UMI thresholds.
+- Added `${sample}.${genome}.single_cell_qc.tsv` beside single-cell H5AD outputs, reporting gene and transcript matrix shapes plus barcode counts above configured raw gene-level UMI thresholds.
 - Added `requirements-h5ad.txt` documenting the Python packages required by the execution image.
 
 ### Fixed

@@ -12,4 +12,4 @@ The fixture `tests/fixtures/synthetic-seqspec.yaml.j2` has never been through `s
 
 The Parse Evercode 0.4.0 template at `templates/parse-evercode-wt-mega-v2-nanopore.yaml.j2` is also unvalidated until it has been rendered and checked inside the DOGME image. Its barcode on-list variables must refer to real, accessible resources for an image validation run.
 
-The H5AD unit tests require `anndata`, `h5py`, `numpy`, `pandas`, and `scipy`. Install `requirements-h5ad.txt` in the test environment or run the tests inside an image containing those packages. The dependency-independent H5AD wiring tests run without them. A full single-cell smoke test should confirm both the gene and transcript H5AD outputs and compare their matrices with the corresponding bustools count outputs.
+The H5AD and BAM-tagging unit tests require the packages in `requirements-h5ad.txt`. Install that file in the test environment or run the tests inside an image containing those packages. The dependency-independent H5AD wiring tests run without them. Single-cell tests verify read-ID matching, `CB`/`UB` tags, UMI deduplication, and inclusion of novel gene/transcript IDs from annotated BAM tags.
