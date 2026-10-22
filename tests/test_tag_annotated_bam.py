@@ -63,6 +63,7 @@ def test_adds_splitcode_tags_and_reports_reads_not_emitted_by_splitcode(tmp_path
         "bam_alignments": 3,
         "tagged_bam_alignments": 2,
         "untagged_bam_alignments": 1,
+        "splitcode_reads_absent_from_annotated_bam": 0,
     }
     assert "untagged_bam_alignments\t1" in qc.read_text()
 
@@ -81,7 +82,7 @@ def test_rejects_misaligned_splitcode_fastq_records(tmp_path):
         )
 
 
-def test_rejects_splitcode_read_ids_missing_from_annotated_bam(tmp_path):
+def test_reports_splitcode_read_ids_missing_from_annotated_bam(tmp_path):
     bam = tmp_path / "input.bam"
     umi = tmp_path / "umi.fastq.gz"
     barcode = tmp_path / "barcode.fastq.gz"
@@ -89,10 +90,14 @@ def test_rejects_splitcode_read_ids_missing_from_annotated_bam(tmp_path):
     write_fastq(umi, [("not_in_bam", "AACCGGTTAA")])
     write_fastq(barcode, [("not_in_bam", "ACGTACGTACGTACGTACGTACGT")])
 
-    with pytest.raises(ValueError, match="absent from the annotated BAM"):
-        tag_annotated_bam.tag_bam(
-            bam, umi, barcode, tmp_path / "tagged.bam", tmp_path / "qc.tsv"
-        )
+    qc = tmp_path / "qc.tsv"
+    metrics = tag_annotated_bam.tag_bam(
+        bam, umi, barcode, tmp_path / "tagged.bam", qc
+    )
+
+    assert metrics["tagged_bam_alignments"] == 0
+    assert metrics["splitcode_reads_absent_from_annotated_bam"] == 1
+    assert "splitcode_reads_absent_from_annotated_bam\t1" in qc.read_text()
 
 
 def test_rejects_duplicate_splitcode_read_ids(tmp_path):

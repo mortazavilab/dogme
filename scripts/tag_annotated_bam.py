@@ -97,7 +97,6 @@ def tag_bam(
 
             total_alignments = 0
             tagged_alignments = 0
-            matched_read_ids = 0
             with pysam.AlignmentFile(str(bam_path), "rb") as source:
                 with pysam.AlignmentFile(str(output_path), "wb", template=source) as target:
                     for read in source.fetch(until_eof=True):
@@ -117,18 +116,9 @@ def tag_bam(
                             tagged_alignments += 1
                         target.write(read)
             db.commit()
-            missing_ids = db.execute(
-                "SELECT read_id FROM read_tags WHERE matched = 0 ORDER BY read_id LIMIT 10"
-            ).fetchall()
             missing_count = db.execute(
                 "SELECT COUNT(*) FROM read_tags WHERE matched = 0"
             ).fetchone()[0]
-            if missing_count:
-                examples = ", ".join(read_id for (read_id,) in missing_ids)
-                raise ValueError(
-                    f"{missing_count} Splitcode read IDs were absent from the annotated BAM"
-                    f" (examples: {examples})"
-                )
         finally:
             db.close()
 
@@ -137,6 +127,7 @@ def tag_bam(
         "bam_alignments": total_alignments,
         "tagged_bam_alignments": tagged_alignments,
         "untagged_bam_alignments": total_alignments - tagged_alignments,
+        "splitcode_reads_absent_from_annotated_bam": missing_count,
     }
     with qc_output_path.open("w") as output:
         output.write("metric\tvalue\n")

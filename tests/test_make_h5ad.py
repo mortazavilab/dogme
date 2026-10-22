@@ -140,9 +140,9 @@ def test_annotated_bam_h5ad_includes_novel_tags_and_deduplicates_umis(tmp_path):
     pysam = pytest.importorskip("pysam")
     bam_path = tmp_path / "sample.annotated.single_cell.bam"
     gtf_path = tmp_path / "sample_dogme.gtf"
-    gene_output = tmp_path / "sample_mm39.gene.h5ad"
-    transcript_output = tmp_path / "sample_mm39.transcript.h5ad"
-    qc_output = tmp_path / "sample_mm39.single_cell_qc.tsv"
+    gene_output = tmp_path / "sample.mm39.gene.h5ad"
+    transcript_output = tmp_path / "sample.mm39.transcript.h5ad"
+    qc_output = tmp_path / "sample.mm39.single_cell_qc.tsv"
     gtf_path.write_text(
         'chr1\ttest\texon\t1\t10\t.\t+\t.\tgene_id "gene-known"; '
         'transcript_id "tx-known"; gene_name "Known"; gene_type "protein_coding"; '

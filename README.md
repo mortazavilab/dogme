@@ -103,9 +103,9 @@ same read IDs used for mapping, then adds the corrected barcode and UMI to the
 annotated BAM as `CB` and `UB` tags. The tagged BAM is published under
 `${annotDir}` as `${sample}.${genome}.annotated.single_cell.bam`, with an index
 and a Splitcode/BAM matching QC table. Duplicate or unsynchronized Splitcode
-read IDs, and Splitcode IDs absent from the annotated BAM, stop the task rather
-than silently assigning tags to the wrong reads. Reads excluded by Splitcode
-remain untagged and are reported in the QC table.
+read IDs stop the task rather than silently assigning tags to the wrong reads.
+Splitcode reads absent from the annotated BAM, such as unmapped reads, remain
+untagged and are reported in the QC table.
 
 Single-cell H5AD files are built from this tagged BAM and the final DOGME GTF,
 rather than the reference-only kallisto BUS matrices, so observed novel gene
@@ -302,12 +302,14 @@ The renderer and splitcode task run inside `ghcr.io/mortazavilab/dogme-pipeline:
 
 ### Single-cell H5AD outputs
 
-For `readType = 'CDNA'` with `singleCell = true`, DOGME creates two sparse AnnData files for each genome under `${kallistoDir}/${genome}/single-cell/`:
+For `readType = 'CDNA'` with `singleCell = true`, DOGME creates these sparse AnnData files for each genome under `${topDir}/h5ad/`:
 
-- `${sample}_${genome}.gene.h5ad` contains cell-by-gene unique-UMI counts from the `GX` gene tags on the tagged annotated BAM.
-- `${sample}_${genome}.transcript.h5ad` contains cell-by-transcript unique-UMI counts from its `TX` transcript tags.
+- `${sample}.${genome}.gene.h5ad` contains cell-by-gene unique-UMI counts from the `GX` gene tags on the tagged annotated BAM.
+- `${sample}.${genome}.transcript.h5ad` contains cell-by-transcript unique-UMI counts from its `TX` transcript tags.
+- `${sample}.${genome}.kallisto.gene.h5ad` contains the reference-indexed gene counts from the kallisto/bustools matrix.
+- `${sample}.${genome}.kallisto.transcript.h5ad` contains the reference-indexed transcript counts from the kallisto/bustools matrix.
 
-Both files use cells as observations and genes or transcripts as variables. Features are the union of IDs in the final DOGME GTF and IDs observed in BAM tags, so novel annotations are represented even when they are not in the reference kallisto index. Corrected cell barcodes are stored in `obs_names` and their first 8 bases are also stored in `obs['barcode_1']`; feature identifiers are stored in `var_names`. Per-cell and per-feature UMI totals and detected-feature counts are included. Transcript H5AD files include `var['gene_id']` from the DOGME GTF when available. DOGME records the sample, genome, read type, feature type, count type, and `singleCellEntity` value in `uns['dogme']`. Counts remain raw sparse integers deduplicated by barcode, feature, and UMI; DOGME does not normalize, filter, cluster, or infer whether observations are cells or nuclei. When H5AD generation is enabled, `${sample}_${genome}.single_cell_qc.tsv` is published beside the H5AD files with both matrix dimensions and barcode counts above gene-level UMI thresholds from 100 to 20,000.
+The annotated-BAM H5ADs use cells as observations and genes or transcripts as variables. Their features are the union of IDs in the final DOGME GTF and IDs observed in BAM tags, so novel annotations are represented even when they are not in the reference kallisto index. The kallisto H5AD retains only the features in its reference index. Corrected cell barcodes are stored in `obs_names` and their first 8 bases are also stored in `obs['barcode_1']`; feature identifiers are stored in `var_names`. Per-cell and per-feature UMI totals and detected-feature counts are included. Transcript H5AD files include `var['gene_id']` from the DOGME GTF when available. DOGME records the sample, genome, read type, feature type, count type, and `singleCellEntity` value in `uns['dogme']`. Counts remain raw sparse integers deduplicated by barcode, feature, and UMI; DOGME does not normalize, filter, cluster, or infer whether observations are cells or nuclei. When H5AD generation is enabled, `${sample}.${genome}.single_cell_qc.tsv` is published beside the H5AD files with both annotated-BAM matrix dimensions and barcode counts above gene-level UMI thresholds from 100 to 20,000.
 
 H5AD creation is enabled by default. To skip it while retaining the tagged annotated BAM and kallisto/bustools outputs, set `singleCellH5ad = false`. The execution image must provide the packages listed in `requirements-h5ad.txt`, including `pysam`. Dorado-demultiplexed outputs are not converted to cell-level H5AD files because that path does not currently retain per-cell UMI/barcode processing.
 
@@ -316,8 +318,10 @@ Example:
 ```python
 import anndata
 
-gene_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39.gene.h5ad')
-transcript_data = anndata.read_h5ad('kallisto/mm39/single-cell/sample_mm39.transcript.h5ad')
+gene_data = anndata.read_h5ad('h5ad/sample.mm39.gene.h5ad')
+transcript_data = anndata.read_h5ad('h5ad/sample.mm39.transcript.h5ad')
+kallisto_gene_data = anndata.read_h5ad('h5ad/sample.mm39.kallisto.gene.h5ad')
+kallisto_transcript_data = anndata.read_h5ad('h5ad/sample.mm39.kallisto.transcript.h5ad')
 ```
 
 ---

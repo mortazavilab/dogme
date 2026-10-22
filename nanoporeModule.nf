@@ -563,9 +563,13 @@ process singleCellKallistoTask {
     tag "${genomeName} single-cell"
     input:
     tuple path(cDNAFile), path(umiFile), path(barcodeFile), path(indexFile), path(t2gFile), val(genomeName)
+    path h5adScript
     output:
     path "${params.sample}_${genomeName}", emit: results
-    publishDir "${params.kallistoDir}/${genomeName}/single-cell", mode: 'copy'
+    path "${params.sample}.${genomeName}.kallisto.gene.h5ad", optional: true, emit: gene_h5ad
+    path "${params.sample}.${genomeName}.kallisto.transcript.h5ad", optional: true, emit: transcript_h5ad
+    publishDir "${params.kallistoDir}/${genomeName}/single-cell", pattern: "${params.sample}_${genomeName}", mode: 'copy'
+    publishDir "${params.topDir}/h5ad", pattern: "*.h5ad", mode: 'copy'
     script:
     """
     . ${params.scriptEnv}
@@ -584,6 +588,35 @@ process singleCellKallistoTask {
         -t "\${output_dir}/transcripts.txt" \\
         -e "\${output_dir}/matrix.ec" \\
         -o "\${output_dir}/count" --cm -m --genecounts -g ${t2gFile}
+    awk 'NF {print \$1 "\\t" \$1}' "\${output_dir}/transcripts.txt" > "\${output_dir}/transcript_identity.t2g"
+    bustools count "\${output_dir}/sorted.bus" \\
+        -t "\${output_dir}/transcripts.txt" \\
+        -e "\${output_dir}/matrix.ec" \\
+        -o "\${output_dir}/transcript_count" --cm -m --genecounts \\
+        -g "\${output_dir}/transcript_identity.t2g"
+    if [[ "${params.singleCellH5ad}" == "true" ]]; then
+        python ${h5adScript} \\
+            --matrix "\${output_dir}/count.mtx" \\
+            --barcodes "\${output_dir}/count.barcodes.txt" \\
+            --features "\${output_dir}/count.genes.txt" \\
+            --output "${params.sample}.${genomeName}.kallisto.gene.h5ad" \\
+            --feature-type gene \\
+            --sample "${params.sample}" \\
+            --genome "${genomeName}" \\
+            --read-type "${params.readType}" \\
+            --entity "${params.singleCellEntity}"
+        python ${h5adScript} \\
+            --matrix "\${output_dir}/transcript_count.mtx" \\
+            --barcodes "\${output_dir}/transcript_count.barcodes.txt" \\
+            --features "\${output_dir}/transcript_count.genes.txt" \\
+            --output "${params.sample}.${genomeName}.kallisto.transcript.h5ad" \\
+            --feature-type transcript \\
+            --sample "${params.sample}" \\
+            --genome "${genomeName}" \\
+            --read-type "${params.readType}" \\
+            --entity "${params.singleCellEntity}" \\
+            --t2g ${t2gFile}
+    fi
     """
 }
 
@@ -825,13 +858,13 @@ process singleCellAnnotatedBamTask {
     tuple path("${sampleName}.${genomeName}.annotated.single_cell.bam"),
         path("${sampleName}.${genomeName}.annotated.single_cell.bam.bai"),
         val(sampleName), val(genomeName), emit: tagged_bams
-    path "${sampleName}_${genomeName}.gene.h5ad", optional: true, emit: gene_h5ad
-    path "${sampleName}_${genomeName}.transcript.h5ad", optional: true, emit: transcript_h5ad
-    path "${sampleName}_${genomeName}.single_cell_qc.tsv", optional: true, emit: h5ad_qc
+    path "${sampleName}.${genomeName}.gene.h5ad", optional: true, emit: gene_h5ad
+    path "${sampleName}.${genomeName}.transcript.h5ad", optional: true, emit: transcript_h5ad
+    path "${sampleName}.${genomeName}.single_cell_qc.tsv", optional: true, emit: h5ad_qc
     path "${sampleName}_${genomeName}.splitcode_bam_qc.tsv", emit: tagging_qc
     publishDir params.annotDir, pattern: "*.annotated.single_cell.bam*", mode: 'copy'
-    publishDir "${params.kallistoDir}/${genomeName}/single-cell", pattern: "*.h5ad", mode: 'copy'
-    publishDir "${params.kallistoDir}/${genomeName}/single-cell", pattern: "*.single_cell_qc.tsv", mode: 'copy'
+    publishDir "${params.topDir}/h5ad", pattern: "*.h5ad", mode: 'copy'
+    publishDir "${params.topDir}/h5ad", pattern: "*.single_cell_qc.tsv", mode: 'copy'
     publishDir "${params.annotDir}", pattern: "*.splitcode_bam_qc.tsv", mode: 'copy'
     script:
     """
@@ -848,9 +881,9 @@ process singleCellAnnotatedBamTask {
         python ${h5adScript} \\
             --bam "\${tagged_bam}" \\
             --gtf "${dogmeGtf}" \\
-            --gene-output "${sampleName}_${genomeName}.gene.h5ad" \\
-            --transcript-output "${sampleName}_${genomeName}.transcript.h5ad" \\
-            --qc-output "${sampleName}_${genomeName}.single_cell_qc.tsv" \\
+            --gene-output "${sampleName}.${genomeName}.gene.h5ad" \\
+            --transcript-output "${sampleName}.${genomeName}.transcript.h5ad" \\
+            --qc-output "${sampleName}.${genomeName}.single_cell_qc.tsv" \\
             --sample "${sampleName}" \\
             --genome "${genomeName}" \\
             --entity "${params.singleCellEntity}"
@@ -1000,7 +1033,10 @@ workflow kallistoWorkflow {
                 .map { cDNA, umi, barcode, genomeName, idx, t2gFile ->
                     tuple(cDNA, umi, barcode, idx, t2gFile, genomeName)
                 }
-            terminalKallisto = singleCellKallistoTask(singleCellInput)
+            terminalKallisto = singleCellKallistoTask(
+                singleCellInput,
+                file("${projectDir}/scripts/make_h5ad.py"),
+            )
         } else {
             kallistoInput = fastqFile.combine(indexFiles)
                 .map { fastq, genomeName, idx, t2g -> tuple(fastq, idx, t2g, genomeName) }
@@ -1012,7 +1048,10 @@ workflow kallistoWorkflow {
             singleCellInput = splitcodeTask.out.fastqs.map { cDNA, umi, barcode ->
                 tuple(cDNA, umi, barcode, file(kallistoIndex), file(prebuiltT2g), genomeName)
             }
-            terminalKallisto = singleCellKallistoTask(singleCellInput)
+            terminalKallisto = singleCellKallistoTask(
+                singleCellInput,
+                file("${projectDir}/scripts/make_h5ad.py"),
+            )
         } else {
             kallistoInput = fastqFile.map { fastq ->
                 tuple(fastq, file(kallistoIndex), file(prebuiltT2g), 'prebuilt')
@@ -1360,7 +1399,7 @@ workflow annotateRNAWorkflow {
     annotationResults = annotateRNATask(mappedBamsWithGtf)
     def taggingCompletion = Channel.of(true)
     if (params.readType == 'CDNA' && isSingleCellEnabled()) {
-        def taggingInputs = annotationResults.out.annotation_products
+        def taggingInputs = annotationResults.annotation_products
             .combine(splitcode_fastqs_ch)
             .filter { annotatedBam, dogmeGtf, genomeName, sampleName, umiFile, barcodeFile ->
                 annotatedBam.name == "${sampleName}.${genomeName}.annotated.bam" ||
@@ -1374,7 +1413,7 @@ workflow annotateRNAWorkflow {
             file("${projectDir}/scripts/tag_annotated_bam.py"),
             file("${projectDir}/scripts/make_h5ad.py"),
         )
-        taggingCompletion = taggedResults.out.completion.collect()
+        taggingCompletion = taggedResults.completion.collect()
     }
 
     emit:

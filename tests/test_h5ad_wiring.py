@@ -12,7 +12,22 @@ def test_single_cell_kallisto_keeps_bus_quantification_without_genome_bam():
     assert '-o "\\${output_dir}/count" --cm -m --genecounts -g ${t2gFile}' in process
     assert "--genomebam" not in process
     assert ".kallisto.bam" not in process
-    assert "h5adScript" not in process
+    assert 'path "${params.sample}.${genomeName}.kallisto.gene.h5ad", optional: true, emit: gene_h5ad' in process
+    assert "--matrix \"\\${output_dir}/count.mtx\"" in process
+    assert "--barcodes \"\\${output_dir}/count.barcodes.txt\"" in process
+    assert "--features \"\\${output_dir}/count.genes.txt\"" in process
+    assert '--output "${params.sample}.${genomeName}.kallisto.gene.h5ad"' in process
+    assert 'awk \'NF {print \\$1 "\\\\t" \\$1}\' "\\${output_dir}/transcripts.txt" > "\\${output_dir}/transcript_identity.t2g"' in process
+    assert '-o "\\${output_dir}/transcript_count" --cm -m --genecounts' in process
+    assert '-g "\\${output_dir}/transcript_identity.t2g"' in process
+    assert "--matrix \"\\${output_dir}/transcript_count.mtx\"" in process
+    assert "--barcodes \"\\${output_dir}/transcript_count.barcodes.txt\"" in process
+    assert "--features \"\\${output_dir}/transcript_count.genes.txt\"" in process
+    assert '--output "${params.sample}.${genomeName}.kallisto.transcript.h5ad"' in process
+    assert "--feature-type transcript" in process
+    assert "--t2g ${t2gFile}" in process
+    assert 'publishDir "${params.topDir}/h5ad", pattern: "*.h5ad", mode: \'copy\'' in process
+    assert 'publishDir "${params.kallistoDir}/${genomeName}/single-cell", pattern: "${params.sample}_${genomeName}", mode: \'copy\'' in process
 
 
 def test_annotated_bam_tags_drive_single_cell_h5ad():
@@ -26,8 +41,14 @@ def test_annotated_bam_tags_drive_single_cell_h5ad():
     assert '--gtf "${dogmeGtf}"' in tag_process
     assert "--gene-output" in tag_process
     assert "--transcript-output" in tag_process
+    assert 'publishDir "${params.topDir}/h5ad", pattern: "*.h5ad", mode: \'copy\'' in tag_process
+    assert 'publishDir "${params.topDir}/h5ad", pattern: "*.single_cell_qc.tsv", mode: \'copy\'' in tag_process
+    assert 'publishDir "${params.kallistoDir}/${genomeName}/single-cell", pattern: "*.h5ad"' not in tag_process
     assert 'file("${projectDir}/scripts/tag_annotated_bam.py")' in annotation_workflow
-    assert "annotationResults.out.annotation_products" in annotation_workflow
+    assert "annotationResults.annotation_products" in annotation_workflow
+    assert "annotationResults.out.annotation_products" not in annotation_workflow
+    assert "taggedResults.completion.collect()" in annotation_workflow
+    assert "taggedResults.out.completion" not in annotation_workflow
     assert "singleCellAnnotatedBamTask(" in annotation_workflow
     assert "kallistoResults.fastqs" in nextflow
     assert '"${sampleName}.unmapped.${genomeName}.annotated.bam"' in annotation_workflow
@@ -74,6 +95,7 @@ def test_remap_and_fastq_workflows_connect_splitcode_to_annotation():
     assert "kallistoResults.fastqs" in fastq_workflow
     assert "singleCellTaggingEnabled" in nextflow
     assert "splitcodeFastqs = splitcodeTask.out.fastqs.map" in kallisto_workflow
+    assert 'singleCellKallistoTask(\n                singleCellInput,\n                file("${projectDir}/scripts/make_h5ad.py"),' in kallisto_workflow
     assert "def genomeName = params.genome_annot_refs[0].name" in kallisto_workflow
     assert "completion = terminalKallistoCompletion.combine(seqspecFile.collect())" in kallisto_workflow
 
