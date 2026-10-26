@@ -65,6 +65,20 @@ The following Python scripts are included or updated in the scripts/ directory. 
 
 - scripts/reconcileBams.py
   - Consolidates per-sample/TALON-style BAM/gene outputs and reports consolidated gene counts and reconciliation statistics (updated in 1.2.2 to correct gene counts).
+  - Use `--recreate-h5ad --genome mm39 --entity cell` (or `nucleus`) to rebuild gene/transcript H5ADs and single-cell QC from the reconciled annotated BAMs and final GTF. For example:
+
+    ```bash
+    python scripts/reconcileBams.py \
+      --bams sample.mm39.annotated.single_cell.bam \
+      --annotation reference.gtf \
+      --out_prefix sample \
+      --outdir reconciled \
+      --recreate-h5ad \
+      --genome mm39 \
+      --entity nucleus
+    ```
+
+    The H5ADs and QC table are written to `--outdir` with the same naming convention as the pipeline outputs. The execution environment must include the packages in `requirements-h5ad.txt`.
 
 - scripts/report_bed_rep.py
   - Compares per-sample modkit BED outputs across folders (replicates), including compressed `.bed.gz` files, merges plus/minus strands per sample and produces per-reference/modification comparison CSVs (e.g., Compare_GRCh38_m6A.csv).

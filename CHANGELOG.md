@@ -8,6 +8,7 @@ All notable DOGME changes are documented here.
 
 ### Added
 
+- Add `reconcileBams.py --recreate-h5ad` to rebuild gene/transcript H5ADs and QC from reconciled single-cell annotated BAMs, with cell/nucleus metadata selection.
 - Tag single-cell cDNA annotated BAMs with Splitcode corrected barcodes (`CB`) and UMIs (`UB`).
 - Build gene- and transcript-level H5AD files from annotated BAM tags and the final DOGME GTF, including novel annotations; count unique UMIs per barcode-feature pair.
 - Report tagged and untagged BAM alignments, including Splitcode reads absent from the annotated BAM; fail clearly when FASTQ IDs are duplicate or unsynchronized.

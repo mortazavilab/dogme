@@ -3,8 +3,10 @@ import argparse
 import os
 import sys
 import re
+import subprocess
 from typing import Tuple, Dict, Set, List
 from collections import Counter
+from pathlib import Path
 import pysam
 import concurrent.futures
 
@@ -412,6 +414,43 @@ def rewrite_bam(in_bam: str, out_bam: str, struct_to_new_id: Dict, id_tag: str, 
     except Exception as e: print(f"[WARN] Could not index {out_bam}: {e}", file=sys.stderr)
     print(f"  - Finished rewriting {os.path.basename(in_bam)}: changed IDs for {changed_count} / {total_count} reads. Mapping file created.")
 
+def recreate_h5ad(
+    input_bam: str,
+    reconciled_bam: str,
+    gtf_file: str,
+    outdir: str,
+    genome: str,
+    entity: str,
+) -> None:
+    sample = Path(input_bam).name
+    if sample.endswith(".bam"):
+        sample = sample[:-4]
+    for suffix in (".annotated.single_cell", ".annotated"):
+        if sample.endswith(suffix):
+            sample = sample[:-len(suffix)]
+            break
+    genome_suffix = f".{genome}"
+    if sample.endswith(genome_suffix):
+        sample = sample[:-len(genome_suffix)]
+    if not sample:
+        raise ValueError(f"Could not determine sample name from BAM: {input_bam}")
+
+    output_prefix = os.path.join(outdir, f"{sample}.{genome}")
+    h5ad_script = Path(__file__).with_name("make_h5ad.py")
+    command = [
+        sys.executable,
+        str(h5ad_script),
+        "--bam", reconciled_bam,
+        "--gtf", gtf_file,
+        "--gene-output", f"{output_prefix}.gene.h5ad",
+        "--transcript-output", f"{output_prefix}.transcript.h5ad",
+        "--qc-output", f"{output_prefix}.single_cell_qc.tsv",
+        "--sample", sample,
+        "--genome", genome,
+        "--entity", entity,
+    ]
+    subprocess.run(command, check=True)
+
 def main():
     ap = argparse.ArgumentParser(description="Generate reconciled BAM and annotation files.")
     ap.add_argument("--bams", required=True, nargs='+', help="List of input BAM files.")
@@ -427,7 +466,22 @@ def main():
     ap.add_argument("--min_tpm", type=float, default=1.0, help="Minimum TPM (transcripts per million) required in a sample to count as expressed. Default 1.0.")
     ap.add_argument("--min_samples", type=int, default=2, help="Minimum number of samples that must meet the TPM threshold for a transcript to be retained (default: 2).")
     ap.add_argument("--filter_known", action='store_true', help="Also apply TPM filtering to known transcripts (by default only novel transcripts are filtered).")
+    ap.add_argument(
+        "--recreate-h5ad", "--recreate_h5ad",
+        dest="recreate_h5ad",
+        action="store_true",
+        help="Recreate gene/transcript H5ADs and QC from reconciled single-cell annotated BAMs.",
+    )
+    ap.add_argument("--genome", help="Genome name used in regenerated H5AD output names (required with --recreate-h5ad).")
+    ap.add_argument(
+        "--entity",
+        choices=("cell", "nucleus"),
+        default="cell",
+        help="Observation type to record in regenerated H5AD metadata (default: cell).",
+    )
     args = ap.parse_args()
+    if args.recreate_h5ad and not args.genome:
+        ap.error("--genome is required when --recreate-h5ad is enabled")
     # Ensure min_samples is at least 2, unless explicitly set to 1
     if args.min_samples is None or args.min_samples < 1:
         args.min_samples = 2
@@ -564,9 +618,16 @@ def main():
             struct_to_new_id[merged_key] = struct_to_new_id[representative_key]
 
     print(f"\n=== Step 2: Rewriting BAM files (using {args.threads} threads)... ===")
+    reconciled_bams = {
+        bam_file: os.path.join(
+            args.outdir,
+            f"{os.path.splitext(os.path.basename(bam_file))[0]}.reconciled.bam",
+        )
+        for bam_file in args.bams
+    }
     with concurrent.futures.ThreadPoolExecutor(max_workers=args.threads) as executor:
         futures = [executor.submit(
-            rewrite_bam, bam_file, os.path.join(args.outdir, f"{os.path.splitext(os.path.basename(bam_file))[0]}.reconciled.bam"),
+            rewrite_bam, bam_file, reconciled_bams[bam_file],
             struct_to_new_id, args.id_tag, args.gene_tag
         ) for bam_file in args.bams]
         concurrent.futures.wait(futures)
@@ -718,6 +779,18 @@ def main():
             for s_name in unique_sample_names:
                 row.append(str(data["read_counts"].get(s_name, 0)))
             f.write('\t'.join(row) + '\n')
+
+    if args.recreate_h5ad:
+        print("\n=== Step 4: Recreating single-cell H5AD files from reconciled BAMs... ===")
+        for bam_file, reconciled_bam in reconciled_bams.items():
+            recreate_h5ad(
+                bam_file,
+                reconciled_bam,
+                gtf_file,
+                args.outdir,
+                args.genome,
+                args.entity,
+            )
 
     print("\n=== ✅ All tasks complete! ===")
     print(f"Outputs are in: {args.outdir}")
