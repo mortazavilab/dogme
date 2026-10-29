@@ -819,7 +819,7 @@ process gtfToJunctionBed {
 
 process annotateRNATask {
     input:
-    tuple path(bam), path(bai), val(genomeName), path(gtf)
+    tuple path(bam), path(bai), val(genomeName), path(genomeFasta), path(gtf), path(simpleRepeat)
     output:
     val true, emit: completion
     tuple path("*.annotated.bam"), path("*_dogme.gtf"), val(genomeName), emit: annotation_products
@@ -829,6 +829,7 @@ process annotateRNATask {
     publishDir params.annotDir, mode: 'copy'
     script:
     def outputPrefix = bam.baseName
+    def simpleRepeatArg = optionalParam('simpleRepeat') ? "--simple-repeat ${simpleRepeat}" : ''
     """
     . ${params.scriptEnv}
     # If pipeline is running with CDNA read type, pass -CDNA to annotateRNA
@@ -838,9 +839,15 @@ process annotateRNATask {
         cdna_opt=""
     fi
 
+    if [[ ! -f "${genomeFasta}.fai" ]]; then
+        samtools faidx "${genomeFasta}"
+    fi
+
     python ${projectDir}/scripts/annotateRNA.py \
         --bam ${bam} \
         --gtf ${gtf} \
+        --genome-fasta ${genomeFasta} \
+        ${simpleRepeatArg} \
         --out ${outputPrefix} \
         --threads ${task.cpus} \$cdna_opt \
         --novel_prefix "${outputPrefix}" 2> ${outputPrefix}.log
@@ -1371,9 +1378,15 @@ workflow annotateRNAWorkflow {
 
     main:
     // 1. Create the GTF channel with a new name: 'annotation_gtf_ch'
+    def simpleRepeatPath = optionalParam('simpleRepeat')
+    def repeatTrackFile = simpleRepeatPath
+        ? file(simpleRepeatPath)
+        : file("${projectDir}/scripts/no_repeats.bed")
     def annotation_gtf_ch = Channel
         .fromList(params.genome_annot_refs)
-        .map { ref -> tuple(ref.name, file(ref.annot)) }
+        .map { ref ->
+            tuple(ref.name, file(ref.genome), file(ref.annot), repeatTrackFile)
+        }
 
     // 2. Prepare the BAM channel for grouping
     def bams_for_grouping = mapped_bams_ch
@@ -1386,12 +1399,15 @@ workflow annotateRNAWorkflow {
     def combined_ch = grouped_bams_ch.combine(annotation_gtf_ch, by: 0)
 
     // 5. "Un-roll" the grouped structure back into a flat channel of 4 items
-    def mappedBamsWithGtf = combined_ch.flatMap { genomeName, bams, bais, gtf_file ->
+    def mappedBamsWithGtf = combined_ch.flatMap {
+        genomeName, bams, bais, genomeFasta, gtf_file, simpleRepeat ->
         def results = []
         // Loop through each BAM in the group
         for( int i = 0; i < bams.size(); i++ ) {
             // Create a final tuple for each BAM: (bam, bai, genomeName, gtf_file)
-            results.add( tuple(bams[i], bais[i], genomeName, gtf_file) )
+            results.add(
+                tuple(bams[i], bais[i], genomeName, genomeFasta, gtf_file, simpleRepeat)
+            )
         }
         return results
     }

@@ -64,6 +64,19 @@ def _as_integer_matrix(matrix, np, sparse):
     return matrix.astype(np.int64, copy=False)
 
 
+def _make_obs(barcodes: list[str], plate: str, pd):
+    composite_ids = [
+        f"{len(plate)}:{plate}{len(barcode)}:{barcode}" for barcode in barcodes
+    ]
+    obs = pd.DataFrame(index=pd.Index(composite_ids, name="plate_barcode"))
+    obs["plate"] = plate
+    obs["barcode"] = barcodes
+    obs["barcode_1"] = [barcode[16:24] for barcode in barcodes]
+    obs["barcode_2"] = [barcode[8:16] for barcode in barcodes]
+    obs["barcode_3"] = [barcode[:8] for barcode in barcodes]
+    return obs
+
+
 def convert_matrix(
     matrix_path: Path,
     barcode_path: Path,
@@ -101,8 +114,7 @@ def convert_matrix(
             f"{len(features)} features x {len(barcodes)} barcodes or "
             f"{len(barcodes)} barcodes x {len(features)} features"
         )
-    obs = pd.DataFrame(index=pd.Index(barcodes, name="barcode"))
-    obs["barcode_1"] = [barcode[:8] for barcode in barcodes]
+    obs = _make_obs(barcodes, sample, pd)
     var = pd.DataFrame(index=pd.Index(features, name=feature_type))
     obs["total_counts"] = np.asarray(counts.sum(axis=1)).ravel().astype(np.int64)
     obs["n_features"] = np.asarray((counts > 0).sum(axis=1)).ravel().astype(np.int64)
@@ -111,6 +123,7 @@ def convert_matrix(
 
     metadata = {
         "sample": sample,
+        "plate": sample,
         "genome": genome,
         "read_type": read_type,
         "entity": entity,
@@ -175,6 +188,7 @@ def _read_gtf_feature_metadata(path: Path) -> tuple[dict[str, dict[str, str]], d
                         "transcript_type",
                         attributes.get("transcript_type") or attributes.get("transcript_biotype"),
                     ),
+                    ("splice_site_canonical", attributes.get("splice_site_canonical")),
                 ):
                     if value and key not in entry:
                         entry[key] = value
@@ -221,8 +235,7 @@ def _write_bam_count_h5ad(
         dtype=np.int64,
     )
 
-    obs = pd.DataFrame(index=pd.Index(barcodes, name="barcode"))
-    obs["barcode_1"] = [barcode[:8] for barcode in barcodes]
+    obs = _make_obs(barcodes, sample, pd)
     obs["total_counts"] = np.asarray(counts.sum(axis=1)).ravel().astype(np.int64)
     obs["n_features"] = np.asarray((counts > 0).sum(axis=1)).ravel().astype(np.int64)
     var = pd.DataFrame(index=pd.Index(features, name=feature_type))
@@ -232,7 +245,7 @@ def _write_bam_count_h5ad(
     metadata_columns = (
         ("gene_name", "gene_type")
         if feature_type == "gene"
-        else ("gene_id", "transcript_name", "transcript_type")
+        else ("gene_id", "transcript_name", "transcript_type", "splice_site_canonical")
     )
     for column in metadata_columns:
         var[column] = [
@@ -241,6 +254,7 @@ def _write_bam_count_h5ad(
 
     metadata = {
         "sample": sample,
+        "plate": sample,
         "genome": genome,
         "read_type": "CDNA",
         "entity": entity,

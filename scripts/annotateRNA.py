@@ -22,6 +22,7 @@ import os
 import csv
 import resource
 import subprocess
+from bisect import bisect_right
 from collections import defaultdict, Counter, deque
 from multiprocessing import get_context
 from multiprocessing.managers import SyncManager
@@ -29,7 +30,9 @@ import pysam
 
 __version__ = "1.3.2"
 __author__ = "Elnaz A., Gemini, Ali M."
-CLASSIFICATION_ORDER = ("Known", "ISM", "NIC", "NNC", "Antisense", "Intergenic")
+CLASSIFICATION_ORDER = ("Known", "ISM", "NIC", "NNC", "Antisense", "Intergenic", "Genomic")
+CANONICAL_SPLICE_MOTIFS = {"GTAG", "GCAG", "ATAC"}
+COMPLEMENT = str.maketrans("ACGTN", "TGCAN")
 
 # ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~ Logging ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 def log_message(message, level="INFO"):
@@ -141,7 +144,49 @@ def parse_gtf(gtf_file):
 
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Core Annotation Logic ~~~~~~~~~~~~~~~~~~~~~~~~~~
-def get_read_splice_junctions(read, min_intron_len=10):
+def load_simple_repeats(bed_file):
+    """Index UCSC BED intervals for complete-containment repeat checks."""
+    intervals = defaultdict(list)
+    with open(bed_file) as handle:
+        for line_number, line in enumerate(handle, start=1):
+            if not line.strip() or line.startswith(("#", "track", "browser")):
+                continue
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) < 3:
+                raise ValueError(f"Invalid BED row in {bed_file} at line {line_number}")
+            try:
+                start, end = int(fields[1]), int(fields[2])
+            except ValueError as exc:
+                raise ValueError(f"Invalid BED coordinates in {bed_file} at line {line_number}") from exc
+            if start < 0 or end <= start:
+                raise ValueError(f"Invalid BED interval in {bed_file} at line {line_number}")
+            intervals[fields[0]].append((start, end))
+
+    repeat_index = {}
+    for chrom, chrom_intervals in intervals.items():
+        chrom_intervals.sort()
+        starts = []
+        prefix_max_ends = []
+        max_end = 0
+        for start, end in chrom_intervals:
+            starts.append(start)
+            max_end = max(max_end, end)
+            prefix_max_ends.append(max_end)
+        repeat_index[chrom] = (starts, prefix_max_ends)
+    return repeat_index
+
+
+def junction_fully_contained_in_repeat(chrom, junction, repeat_index):
+    """Return whether a 1-based junction is fully engulfed by a UCSC BED interval."""
+    if not repeat_index or chrom not in repeat_index:
+        return False
+    intron_start, intron_end = junction[0], junction[1] - 1
+    starts, prefix_max_ends = repeat_index[chrom]
+    interval_index = bisect_right(starts, intron_start) - 1
+    return interval_index >= 0 and prefix_max_ends[interval_index] >= intron_end
+
+
+def get_read_splice_junctions(read, min_intron_len=70, repeat_index=None):
     """
     Extracts splice junctions from a BAM alignment record.
     Coordinates are 1-based, inclusive, from 0-based pysam blocks.
@@ -155,12 +200,120 @@ def get_read_splice_junctions(read, min_intron_len=10):
         donor = blocks[i][1]
         acceptor = blocks[i+1][0] + 1
         intron_length = blocks[i+1][0] - blocks[i][1]
-        if intron_length >= min_intron_len:
-            junctions.append((donor, acceptor))
+        junction = (donor, acceptor)
+        if intron_length >= min_intron_len and not junction_fully_contained_in_repeat(
+            read.reference_name, junction, repeat_index
+        ):
+            junctions.append(junction)
     return junctions
 
 def get_read_strand(read):
     return '-' if read.is_reverse else '+'
+
+
+def _reverse_complement(sequence):
+    return sequence.translate(COMPLEMENT)[::-1]
+
+
+def _read_introns(read):
+    blocks = read.get_blocks()
+    return [
+        (blocks[i][1], blocks[i + 1][0])
+        for i in range(len(blocks) - 1)
+        if blocks[i + 1][0] > blocks[i][1]
+    ]
+
+
+def _exon_introns(exons):
+    ordered_exons = sorted(exons)
+    return [
+        (ordered_exons[i][1], ordered_exons[i + 1][0] - 1)
+        for i in range(len(ordered_exons) - 1)
+        if ordered_exons[i + 1][0] - ordered_exons[i][1] > 1
+    ]
+
+
+def _splice_motif(fasta, chrom, intron_start, intron_end):
+    if intron_end - intron_start < 4:
+        return "NNNN", "NNNN"
+    donor = fasta.fetch(chrom, intron_start, intron_start + 2).upper()
+    acceptor = fasta.fetch(chrom, intron_end - 2, intron_end).upper()
+    return donor + acceptor, _reverse_complement(acceptor) + _reverse_complement(donor)
+
+
+def infer_splice_strand(read, fasta):
+    """Infer a consistent transcript strand from canonical reference splice motifs."""
+    votes = set()
+    for intron_start, intron_end in _read_introns(read):
+        plus_motif, minus_motif = _splice_motif(
+            fasta, read.reference_name, intron_start, intron_end
+        )
+        if plus_motif in CANONICAL_SPLICE_MOTIFS:
+            votes.add("+")
+        if minus_motif in CANONICAL_SPLICE_MOTIFS:
+            votes.add("-")
+    return next(iter(votes)) if len(votes) == 1 else None
+
+
+def get_splice_site_canonicality(fasta, chrom, exons):
+    """Report canonicality for every splice junction in a genomic exon model."""
+    introns = _exon_introns(exons)
+    if not introns:
+        return "not_applicable"
+    unknown = False
+    for intron_start, intron_end in introns:
+        plus_motif, minus_motif = _splice_motif(fasta, chrom, intron_start, intron_end)
+        if plus_motif in CANONICAL_SPLICE_MOTIFS or minus_motif in CANONICAL_SPLICE_MOTIFS:
+            continue
+        if "N" in plus_motif or "N" in minus_motif:
+            unknown = True
+        else:
+            return "noncanonical"
+    return "unknown" if unknown else "canonical"
+
+
+def add_splice_canonicality_to_gtf(input_gtf, output_gtf, genes, transcript_info, fasta):
+    canonicality_by_transcript = {}
+    for chrom, chrom_genes in genes.items():
+        for gene in chrom_genes.values():
+            for transcript_id, transcript in gene["transcripts"].items():
+                canonicality = get_splice_site_canonicality(
+                    fasta, chrom, transcript["exons"]
+                )
+                previous = canonicality_by_transcript.get(transcript_id)
+                if previous is not None and previous != canonicality:
+                    raise ValueError(
+                        f"Conflicting splice-site canonicity for transcript {transcript_id}"
+                    )
+                canonicality_by_transcript[transcript_id] = canonicality
+                if transcript_id in transcript_info:
+                    transcript_info[transcript_id]["splice_site_canonical"] = canonicality
+
+    transcript_id_pattern = re.compile(r'transcript_id\s+"?([^";]+)"?')
+    canonicality_pattern = re.compile(r'\s*splice_site_canonical\s+"?[^";]+"?\s*;?')
+    with open(input_gtf) as source, open(output_gtf, "w") as destination:
+        for line in source:
+            fields = line.rstrip("\n").split("\t")
+            if len(fields) == 9:
+                match = transcript_id_pattern.search(fields[8])
+                if match:
+                    transcript_id = match.group(1).split(".")[0]
+                    canonicality = canonicality_by_transcript.get(transcript_id)
+                    if canonicality:
+                        attributes = canonicality_pattern.sub("", fields[8])
+                        attributes = (
+                            attributes.rstrip(" ;")
+                            + f'; splice_site_canonical "{canonicality}";'
+                        )
+                        fields[8] = attributes
+                        line = "\t".join(fields) + "\n"
+            destination.write(line)
+
+
+def get_effective_strand(read, fasta=None):
+    inferred_strand = infer_splice_strand(read, fasta) if fasta is not None else None
+    return inferred_strand or get_read_strand(read)
+
 
 def get_pool_context():
     if sys.platform.startswith('linux'):
@@ -213,8 +366,10 @@ def get_gene_locus(read, read_strand, cdna_flag):
         return (read.reference_name, read.reference_start, read.reference_end)
     return (read.reference_name, read.reference_start, read.reference_end, read_strand)
 
-def get_transcript_locus(read, gene_id_for_tx, read_strand, min_intron_len, cdna_flag):
-    junctions = tuple(get_read_splice_junctions(read, min_intron_len))
+def get_transcript_locus(
+    read, gene_id_for_tx, read_strand, min_intron_len, cdna_flag, repeat_index=None
+):
+    junctions = tuple(get_read_splice_junctions(read, min_intron_len, repeat_index))
     if cdna_flag:
         return (gene_id_for_tx, junctions)
     return (gene_id_for_tx, junctions, read_strand)
@@ -295,8 +450,11 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
     read_chrom = read.reference_name
     read_start = read.reference_start + 1
     read_end = read.reference_end
-    read_strand = '-' if read.is_reverse else '+'
-    read_junctions = get_read_splice_junctions(read, min_intron_len)
+    repeat_index = globals().get("worker_repeat_index")
+    genome_fasta = globals().get("worker_genome_fasta")
+    read_strand = get_effective_strand(read, genome_fasta)
+    read_junctions = get_read_splice_junctions(read, min_intron_len, repeat_index)
+    raw_read_junctions = get_read_splice_junctions(read, 0, repeat_index)
     overlapping_genes_same_strand = []
     overlapping_genes_opp_strand = []
 
@@ -313,6 +471,27 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
                         overlapping_genes_same_strand.append((gene_id, gene_data))
                     else:
                         overlapping_genes_opp_strand.append((gene_id, gene_data))
+
+    if len(raw_read_junctions) == 1:
+        read_junction = raw_read_junctions[0]
+        read_intron_length = read_junction[1] - read_junction[0] - 1
+        if read_intron_length < min_intron_len:
+            for gene_id, gene_data in overlapping_genes_same_strand + overlapping_genes_opp_strand:
+                for transcript_id, transcript_data in gene_data["transcripts"].items():
+                    exons = transcript_data["exons"]
+                    known_junctions = [
+                        (exons[i][1], exons[i + 1][0])
+                        for i in range(len(exons) - 1)
+                    ]
+                    if len(known_junctions) != 1:
+                        continue
+                    known_junction = known_junctions[0]
+                    known_intron_length = known_junction[1] - known_junction[0] - 1
+                    if known_intron_length < min_intron_len and all(
+                        abs(read_boundary - known_boundary) <= junc_tolerance
+                        for read_boundary, known_boundary in zip(read_junction, known_junction)
+                    ):
+                        return "Genomic", gene_id, transcript_id, read
 
     if debug_read and debug_read_list is not None and read.query_name == debug_read:
         debug_lines = []
@@ -448,8 +627,8 @@ def classify_read(read, annotation, min_intron_len, junc_tolerance, debug_gene=N
     return classification, final_gene_id, final_transcript_id, read
 
 # ~~~~~~~~~~~~~~~~~~~~~~ Parallel Processing & I/O ~~~~~~~~~~~~~~~~~~~~~~
-def worker_init(annotation_data, header_dict, min_len, tolerance, debug_gene_id=None, debug_novel_type=None, debug_gene_list=None, debug_novel_list=None, debug_gene_info=None, debug_read_id=None, debug_read_list=None, cdna_flag=False):
-    global worker_annotation, worker_header, worker_min_intron_len, worker_junc_tolerance, worker_debug_gene, worker_debug_novel_type, worker_debug_gene_list, worker_debug_novel_list, worker_debug_gene_info, worker_debug_read_id, worker_debug_read_list
+def worker_init(annotation_data, header_dict, min_len, tolerance, debug_gene_id=None, debug_novel_type=None, debug_gene_list=None, debug_novel_list=None, debug_gene_info=None, debug_read_id=None, debug_read_list=None, cdna_flag=False, genome_fasta_path=None, repeat_index=None):
+    global worker_annotation, worker_header, worker_min_intron_len, worker_junc_tolerance, worker_debug_gene, worker_debug_novel_type, worker_debug_gene_list, worker_debug_novel_list, worker_debug_gene_info, worker_debug_read_id, worker_debug_read_list, worker_genome_fasta, worker_repeat_index
     worker_annotation = annotation_data
     worker_header = pysam.AlignmentHeader.from_dict(header_dict)
     worker_min_intron_len = min_len
@@ -461,13 +640,17 @@ def worker_init(annotation_data, header_dict, min_len, tolerance, debug_gene_id=
     worker_debug_gene_info = debug_gene_info
     worker_debug_read_id = debug_read_id
     worker_debug_read_list = debug_read_list
+    worker_genome_fasta = pysam.FastaFile(genome_fasta_path) if genome_fasta_path else None
+    worker_repeat_index = repeat_index
     # set CDNA mode
     global worker_cdna
     worker_cdna = bool(cdna_flag)
 
 def append_debug_novel_log(read, classification, gene_id, transcript_id):
     if worker_debug_novel_type and classification == worker_debug_novel_type and worker_debug_novel_list is not None:
-        junctions = get_read_splice_junctions(read, worker_min_intron_len)
+        junctions = get_read_splice_junctions(
+            read, worker_min_intron_len, worker_repeat_index
+        )
         debug_line = f"Read:{read.query_name}\tGene:{gene_id}\tTranscript:{transcript_id}\tJunctions:{junctions}"
         worker_debug_novel_list.append(debug_line)
 
@@ -484,7 +667,7 @@ def process_chunk_novel_loci(read_strings):
         )
         if result:
             classification, gene_id, transcript_id, _ = result
-            read_strand = get_read_strand(read)
+            read_strand = get_effective_strand(read, worker_genome_fasta)
 
             if gene_id == "NOVELG":
                 novel_gene_locus = get_gene_locus(read, read_strand, worker_cdna)
@@ -495,7 +678,8 @@ def process_chunk_novel_loci(read_strings):
             if transcript_id in ["NOVEL", "NOVELT"]:
                 gene_id_for_tx = gene_id if gene_id != "NOVELG" else novel_gene_locus
                 novel_transcript_locus = get_transcript_locus(
-                    read, gene_id_for_tx, read_strand, worker_min_intron_len, worker_cdna
+                    read, gene_id_for_tx, read_strand, worker_min_intron_len,
+                    worker_cdna, worker_repeat_index
                 )
                 novel_transcript_counts[novel_transcript_locus] += 1
 
@@ -558,7 +742,7 @@ def generate_qc_report(abundance_counter, gene_id_to_name, qc_filename):
         header = [
             "gene_id", "gene_name", "known_models", "known_reads", "ism_models", "ism_reads",
             "nic_models", "nic_reads", "nnc_models", "nnc_reads", "antisense_models", "antisense_reads",
-            "intergenic_models", "intergenic_reads"
+            "intergenic_models", "intergenic_reads", "genomic_models", "genomic_reads"
         ]
         f.write(",".join(header) + "\n")
         for gene_id in sorted(gene_qc_data.keys()):
@@ -573,9 +757,10 @@ def generate_qc_report(abundance_counter, gene_id_to_name, qc_filename):
             nnc_models, nnc_reads = get_counts('NNC')
             antisense_models, antisense_reads = get_counts('Antisense')
             intergenic_models, intergenic_reads = get_counts('Intergenic')
+            genomic_models, genomic_reads = get_counts('Genomic')
             f.write(f"{gene_id},{gene_name},{known_models},{known_reads},{ism_models},{ism_reads},"
                     f"{nic_models},{nic_reads},{nnc_models},{nnc_reads},{antisense_models},{antisense_reads},"
-                    f"{intergenic_models},{intergenic_reads}\n")
+                    f"{intergenic_models},{intergenic_reads},{genomic_models},{genomic_reads}\n")
 
 def sort_and_index_bam(unsorted_bam_path, sorted_bam_path):
     log_message(f"Sorting BAM file: {unsorted_bam_path}")
@@ -605,14 +790,16 @@ def generate_dogme_output(abundance, transcript_info, novel_models, gene_id_to_n
             "gene_name": gene_id_to_name.get(model['gene_id'], model['gene_id']),
             "transcript_name": model['id'],
             "n_exons": len(model['exons']),
-            "length": sum(end - start + 1 for start, end in model['exons'])
+            "length": sum(end - start + 1 for start, end in model['exons']),
+            "splice_site_canonical": model["splice_site_canonical"],
         }
 
     with open(dogme_abundance_file, 'w') as f:
         header = [
             "gene_ID", "transcript_ID", "annot_gene_id", "annot_transcript_id",
             "annot_gene_name", "annot_transcript_name", "n_exons", "length",
-            "gene_novelty", "transcript_novelty", "ISM_subtype", sample_name
+            "gene_novelty", "transcript_novelty", "splice_site_canonical",
+            "ISM_subtype", sample_name
         ]
         f.write("\t".join(header) + "\n")
 
@@ -637,7 +824,8 @@ def generate_dogme_output(abundance, transcript_info, novel_models, gene_id_to_n
             row_data = [
                 info['gene_id'], transcript_id, annot_gene_id, annot_transcript_id,
                 info['gene_name'], info['transcript_name'], str(info['n_exons']),
-                str(info['length']), gene_novelty, transcript_novelty, "NA", str(count)
+                str(info['length']), gene_novelty, transcript_novelty,
+                info.get("splice_site_canonical", "NA"), "NA", str(count)
             ]
             f.write("\t".join(row_data) + "\n")
             written_transcripts.add(transcript_id)
@@ -679,11 +867,13 @@ def main():
     parser = argparse.ArgumentParser(description="Annotate long-read RNA-seq BAM files.", formatter_class=argparse.RawTextHelpFormatter)
     parser.add_argument("--bam", "-b", required=True, help="Input BAM file.")
     parser.add_argument("--gtf", "-g", required=True, help="Gene annotation file.")
+    parser.add_argument("--genome-fasta", required=True, help="Reference genome FASTA used for splice-site motif checks.")
+    parser.add_argument("--simple-repeat", help="Optional UCSC BED simpleRepeat track; fully contained junctions are rejected.")
     parser.add_argument("--out", "-o", required=True, help="Output file prefix.")
     parser.add_argument("--threads", "-t", type=int, default=1, help="Number of threads.")
     parser.add_argument("--chunk_size", type=int, default=5000, help="Reads per chunk.")
     parser.add_argument("--num_reads", type=int, default=None, help="Process first N reads.")
-    parser.add_argument("--min_intron_len", type=int, default=30, help="Min intron length.")
+    parser.add_argument("--min_intron_len", type=int, default=70, help="Minimum accepted intron length in bp.")
     parser.add_argument("--junc_tolerance", type=int, default=2, help="Tolerance for matching splice junctions (e.g., 2 for +/- 2 bp).")
     parser.add_argument("--min_reads_for_novel", type=int, default=2, help="Minimum number of reads to support a novel gene or transcript (default: 2).")
     parser.add_argument("-CDNA", "--cdna", action="store_true", dest="cdna", default=False, help="Ignore read strand when matching to reference/novel transcript models (treat as cDNA).")
@@ -695,6 +885,15 @@ def main():
     parser.add_argument("-v", "--version", action="version", version=f"%(prog)s {__version__}")
     args = parser.parse_args()
 
+    if args.min_intron_len < 1:
+        parser.error("--min_intron_len must be a positive integer")
+    if not os.path.isfile(args.genome_fasta):
+        parser.error(f"Reference genome FASTA does not exist: {args.genome_fasta}")
+    if args.simple_repeat and not os.path.isfile(args.simple_repeat):
+        parser.error(f"Simple-repeat BED does not exist: {args.simple_repeat}")
+
+    repeat_index = load_simple_repeats(args.simple_repeat) if args.simple_repeat else None
+    reference_fasta = pysam.FastaFile(args.genome_fasta)
     start_time = time.time()
     if args.debug_gene or args.debug_read:
         args.threads = 1
@@ -821,7 +1020,7 @@ def main():
         pool = pool_context.Pool(processes=args.threads, initializer=worker_init, initargs=(
             region_annotation, header_dict, args.min_intron_len, args.junc_tolerance,
             args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list, debug_gene_info,
-            args.debug_read, debug_read_log_list, args.cdna
+            args.debug_read, debug_read_log_list, args.cdna, args.genome_fasta, repeat_index
         ), maxtasksperchild=25)
 
         try:
@@ -879,7 +1078,7 @@ def main():
         pool_2 = pool_context.Pool(processes=args.threads, initializer=worker_init, initargs=(
             region_annotation, header_dict, args.min_intron_len, args.junc_tolerance,
             args.debug_gene, args.debug_novel_type, debug_gene_log_list, debug_novel_log_list, debug_gene_info,
-            args.debug_read, debug_read_log_list, args.cdna
+            args.debug_read, debug_read_log_list, args.cdna, args.genome_fasta, repeat_index
         ), maxtasksperchild=25)
 
         try:
@@ -897,7 +1096,7 @@ def main():
                     total_reads_written += 1
                     region_reads_written += 1
                     read = pysam.AlignedSegment.fromstring(read_string, main_process_header)
-                    read_strand = get_read_strand(read)
+                    read_strand = get_effective_strand(read, reference_fasta)
                     
                     final_gene_id = prelim_gene_id
                     final_transcript_id = prelim_transcript_id
@@ -919,7 +1118,8 @@ def main():
                         else:
                             gene_id_for_tx = get_gene_locus(read, read_strand, args.cdna)
                         transcript_locus = get_transcript_locus(
-                            read, gene_id_for_tx, read_strand, args.min_intron_len, args.cdna
+                            read, gene_id_for_tx, read_strand, args.min_intron_len,
+                            args.cdna, repeat_index
                         )
                         
                         if transcript_locus in valid_novel_transcript_loci:
@@ -930,18 +1130,17 @@ def main():
                                 novel_transcript_locus_to_id[transcript_locus] = new_id
                                 exons = [(b[0] + 1, b[1]) for b in read.get_blocks()]
                                 model_strand = read_strand
-                                try:
-                                    if final_gene_id != "NOVELG":
-                                        chrom_genes = genes.get(read.reference_name, {})
-                                        gene_info = chrom_genes.get(final_gene_id)
-                                        if gene_info and 'strand' in gene_info:
-                                            model_strand = gene_info['strand']
-                                except Exception:
-                                    model_strand = read_strand
+                                if final_gene_id != "NOVELG":
+                                    gene_info = genes.get(read.reference_name, {}).get(final_gene_id)
+                                    if gene_info and gene_info.get("strand") in ("+", "-"):
+                                        model_strand = gene_info["strand"]
 
                                 novel_models[transcript_locus] = {
                                     'id': new_id, 'gene_id': final_gene_id, 'chrom': read.reference_name,
-                                    'strand': model_strand, 'exons': exons
+                                    'strand': model_strand, 'exons': exons,
+                                    'splice_site_canonical': get_splice_site_canonicality(
+                                        reference_fasta, read.reference_name, exons
+                                    )
                                 }
                             final_transcript_id = novel_transcript_locus_to_id[transcript_locus]
                         else:
@@ -1066,20 +1265,29 @@ def main():
     )
     log_message(f"Prepared {len(novel_models_for_export):,} novel models for DOGME export.")
 
-    generate_dogme_output(abundance_for_dogme, transcript_info, novel_models_for_export, gene_id_to_name, output_prefix, sample_name)
     dogme_gtf_file = f"{output_prefix}_dogme.gtf"
     log_message(f"Generating DOGME GTF file: {dogme_gtf_file} ({len(novel_models_for_export):,} novel models)")
-    with open(dogme_gtf_file, 'w') as f_out:
-        with open(args.gtf, 'r') as f_in:
-            f_out.write(f_in.read())
-        log_message("Reference annotation copied to DOGME GTF; writing novel models.")
+    add_splice_canonicality_to_gtf(
+        args.gtf, dogme_gtf_file, genes, transcript_info, reference_fasta
+    )
+    with open(dogme_gtf_file, 'a') as f_out:
+        log_message("Reference annotation copied with splice-site flags; writing novel models.")
         for model_number, model in enumerate(novel_models_for_export.values(), 1):
-            attributes = f'gene_id "{model["gene_id"]}"; transcript_id "{model["id"]}";'
+            attributes = (
+                f'gene_id "{model["gene_id"]}"; transcript_id "{model["id"]}"; '
+                f'splice_site_canonical "{model["splice_site_canonical"]}";'
+            )
             f_out.write(f"\n{model['chrom']}\tDOGME\ttranscript\t{model['exons'][0][0]}\t{model['exons'][-1][1]}\t.\t{model['strand']}\t.\t{attributes}")
             for i, exon in enumerate(model['exons'], 1):
                 f_out.write(f"\n{model['chrom']}\tDOGME\texon\t{exon[0]}\t{exon[1]}\t.\t{model['strand']}\t.\t{attributes} exon_number \"{i}\";")
             if model_number % 10000 == 0:
                 log_message(f"DOGME GTF: wrote {model_number:,}/{len(novel_models_for_export):,} novel models.")
+
+    generate_dogme_output(
+        abundance_for_dogme, transcript_info, novel_models_for_export,
+        gene_id_to_name, output_prefix, sample_name
+    )
+    reference_fasta.close()
 
     # --- Final Statistics Reporting ---
     log_message("--- Final Statistics ---")

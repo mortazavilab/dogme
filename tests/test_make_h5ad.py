@@ -46,8 +46,18 @@ def test_transcript_h5ad_is_cell_by_transcript_with_metadata(tmp_path):
 
     adata = anndata.read_h5ad(output)
     assert adata.shape == (2, 3)
-    assert list(adata.obs_names) == ["ACGTACGTGGGGCCCCTTTTAAAA", "TGCATGCACCCCGGGGAAAATTTT"]
-    assert list(adata.obs["barcode_1"]) == ["ACGTACGT", "TGCATGCA"]
+    assert list(adata.obs_names) == [
+        "6:sample24:ACGTACGTGGGGCCCCTTTTAAAA",
+        "6:sample24:TGCATGCACCCCGGGGAAAATTTT",
+    ]
+    assert list(adata.obs["plate"]) == ["sample", "sample"]
+    assert list(adata.obs["barcode"]) == [
+        "ACGTACGTGGGGCCCCTTTTAAAA",
+        "TGCATGCACCCCGGGGAAAATTTT",
+    ]
+    assert list(adata.obs["barcode_1"]) == ["TTTTAAAA", "AAAATTTT"]
+    assert list(adata.obs["barcode_2"]) == ["GGGGCCCC", "CCCCGGGG"]
+    assert list(adata.obs["barcode_3"]) == ["ACGTACGT", "TGCATGCA"]
     assert list(adata.var_names) == ["tx-1", "tx-2", "tx-3"]
     np.testing.assert_array_equal(adata.X.toarray(), [[1, 0, 3], [0, 2, 0]])
     assert list(adata.var["gene_id"]) == ["gene-1", "gene-1", ""]
@@ -146,7 +156,8 @@ def test_annotated_bam_h5ad_includes_novel_tags_and_deduplicates_umis(tmp_path):
     gtf_path.write_text(
         'chr1\ttest\texon\t1\t10\t.\t+\t.\tgene_id "gene-known"; '
         'transcript_id "tx-known"; gene_name "Known"; gene_type "protein_coding"; '
-        'transcript_name "Known transcript"; transcript_type "protein_coding";\n'
+        'transcript_name "Known transcript"; transcript_type "protein_coding"; '
+        'splice_site_canonical "canonical";\n'
         'chr1\ttest\texon\t20\t30\t.\t+\t.\tgene_id "gene-unused"; '
         'transcript_id "tx-unused"; gene_name "Unused"; gene_type "lncRNA"; '
         'transcript_name "Unused transcript"; transcript_type "lncRNA";\n'
@@ -190,8 +201,15 @@ def test_annotated_bam_h5ad_includes_novel_tags_and_deduplicates_umis(tmp_path):
     transcript_data = anndata.read_h5ad(transcript_output)
     assert set(gene_data.var_names) == {"gene-known", "gene-unused", "NOVELG000001"}
     assert set(transcript_data.var_names) == {"tx-known", "tx-unused", "NOVELT0000000001"}
-    assert list(gene_data.obs_names) == ["CELL0001", "CELL0002"]
-    assert list(gene_data.obs["barcode_1"]) == ["CELL0001", "CELL0002"]
+    assert list(gene_data.obs_names) == [
+        "6:sample8:CELL0001",
+        "6:sample8:CELL0002",
+    ]
+    assert list(gene_data.obs["plate"]) == ["sample", "sample"]
+    assert list(gene_data.obs["barcode"]) == ["CELL0001", "CELL0002"]
+    assert list(gene_data.obs["barcode_1"]) == ["", ""]
+    assert list(gene_data.obs["barcode_2"]) == ["", ""]
+    assert list(gene_data.obs["barcode_3"]) == ["CELL0001", "CELL0002"]
     assert gene_data[0, "gene-known"].X[0, 0] == 1
     assert gene_data[0, "NOVELG000001"].X[0, 0] == 1
     assert gene_data[1, "gene-known"].X[0, 0] == 1
@@ -199,7 +217,26 @@ def test_annotated_bam_h5ad_includes_novel_tags_and_deduplicates_umis(tmp_path):
     assert transcript_data[0, "NOVELT0000000001"].X[0, 0] == 1
     assert transcript_data[1, "tx-known"].X[0, 0] == 1
     assert transcript_data.var.loc["tx-known", "gene_id"] == "gene-known"
+    assert transcript_data.var.loc["tx-known", "splice_site_canonical"] == "canonical"
     assert gene_data.uns["dogme"]["count_type"] == "unique_umi_counts"
     assert gene_data.uns["dogme"]["unmapped_feature_count"] == 1
     assert transcript_data.uns["dogme"]["unmapped_feature_count"] == 1
     assert qc_output.exists()
+
+
+def test_h5ad_observation_keys_include_plate(tmp_path):
+    matrix, barcodes, features, t2g = write_inputs(tmp_path)
+    first_plate = tmp_path / "plate-a.h5ad"
+    second_plate = tmp_path / "plate-b.h5ad"
+
+    for plate, output in (("plate-a", first_plate), ("plate-b", second_plate)):
+        make_h5ad.convert_matrix(
+            matrix, barcodes, features, output, "gene", plate, "mm39", "CDNA", "cell"
+        )
+
+    first = anndata.read_h5ad(first_plate)
+    second = anndata.read_h5ad(second_plate)
+    assert first.obs["barcode"].tolist() == second.obs["barcode"].tolist()
+    assert first.obs_names[0] != second.obs_names[0]
+    assert first.obs.iloc[0]["plate"] == "plate-a"
+    assert second.obs.iloc[0]["plate"] == "plate-b"

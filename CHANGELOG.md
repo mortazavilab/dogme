@@ -4,6 +4,17 @@ All notable DOGME changes are documented here.
 
 ## [Unreleased]
 
+### Added
+
+- Record splice-site canonicity in DOGME GTFs, abundance tables, and transcript H5AD metadata; infer novel-model strand from canonical reference splice motifs.
+- Add optional UCSC simpleRepeat filtering that rejects only junctions fully contained within a repeat interval.
+- Add plate and barcode-segment metadata to H5AD observations, with plate-aware composite observation keys.
+
+### Changed
+
+- Default the minimum accepted intron length to 70 bp and classify reads matching known single-intron models below the threshold as `Genomic`.
+- Set H5AD barcode columns to `barcode_1` (bases 17–24), `barcode_2` (bases 9–16), and `barcode_3` (bases 1–8).
+
 ## [1.4.3] - 2026-10-22
 
 ### Added
